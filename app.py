@@ -6,13 +6,7 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
-# ---------- CONFIGURATION ----------
-st.set_page_config(
-    page_title="Core & Satellite Décisionnel",
-    page_icon="🛰️",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Core & Satellite Décisionnel", page_icon="🛰️", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -22,19 +16,46 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- DONNÉES PORTEFEUILLE ----------
-CAPITAL_INITIAL = 13796.71   # €
+CAPITAL_INITIAL = 13796.71
 DATE_DEBUT = datetime(2025, 9, 17)
+
+# Chaque position définit une liste de tickers Yahoo possibles, classés par priorité
 POSITIONS = [
-    {"nom": "MSCI World AV",  "ticker": "MWRD.L",  "parts": 36.33, "prm": 145.09},
-    {"nom": "MSCI World PEA", "ticker": "DCAM.PA", "parts": 481,   "prm": 5.261},
-    {"nom": "Global Hydrogen","ticker": "ANRJ.PA", "parts": 4.77, "prm": 706.06},
-    {"nom": "EM Asia",        "ticker": "AASI.PA", "parts": 40.83, "prm": 52.48},
-    {"nom": "Or Physique",    "ticker": "CGLD.PA", "parts": 4.59, "prm": 163.39},
+    {
+        "nom": "MSCI World AV",
+        "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"],  # fallback si MWRD indispo
+        "parts": 36.33,
+        "prm": 145.09
+    },
+    {
+        "nom": "MSCI World PEA",
+        "tickers": ["DCAM.PA"],
+        "parts": 481,
+        "prm": 5.261
+    },
+    {
+        "nom": "Global Hydrogen",
+        "tickers": ["ANRJ.PA"],
+        "parts": 4.77,
+        "prm": 706.06
+    },
+    {
+        "nom": "EM Asia",
+        "tickers": ["AASI.PA"],
+        "parts": 40.83,
+        "prm": 52.48
+    },
+    {
+        "nom": "Or Physique",
+        "tickers": ["CGLD.PA", "GOLD.PA", "GLD"],  # GLD en USD -> conversion
+        "parts": 4.59,
+        "prm": 163.39
+    },
 ]
 BENCHMARK_TICKER = "CW8.PA"
 EXTRA_TICKERS = ["^TNX", "DX-Y.NYB", "BZ=F", "BE", "NVDA", "^SOX"]
 
-# ---------- FONCTIONS ROBUSTES ----------
+# ---------- FONCTIONS UTILES ----------
 def to_float(val):
     if val is None: return None
     if isinstance(val, (int, float, np.floating, np.integer)): return float(val)
@@ -44,55 +65,62 @@ def to_float(val):
     except: return None
 
 def safe_last(series):
-    """Renvoie la dernière valeur non-NaN d'une série."""
     if series is None: return None
     if isinstance(series, pd.DataFrame): series = series.squeeze()
     if isinstance(series, pd.Series):
-        non_null = series.dropna()
-        return to_float(non_null.iloc[-1]) if not non_null.empty else None
+        valid = series.dropna()
+        return to_float(valid.iloc[-1]) if not valid.empty else None
     if isinstance(series, np.ndarray):
-        non_null = series[~np.isnan(series)]
-        return to_float(non_null[-1]) if non_null.size > 0 else None
+        valid = series[~np.isnan(series)]
+        return to_float(valid[-1]) if valid.size > 0 else None
     return to_float(series)
 
 def safe_prev(series):
-    """Avant-dernière valeur non-NaN."""
     if series is None: return None
     if isinstance(series, pd.DataFrame): series = series.squeeze()
     if isinstance(series, pd.Series):
-        non_null = series.dropna()
-        return to_float(non_null.iloc[-2]) if len(non_null) > 1 else safe_last(series)
+        valid = series.dropna()
+        return to_float(valid.iloc[-2]) if len(valid) > 1 else safe_last(series)
     return None
+
+def download_ticker(ticker, start):
+    """Télécharge un ticker, retourne DataFrame ou None."""
+    try:
+        df = yf.download(ticker, start=start, progress=False)
+        if not df.empty:
+            return df
+    except:
+        pass
+    return pd.DataFrame()
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_all_data():
-    all_tickers = list(set([p["ticker"] for p in POSITIONS] + [BENCHMARK_TICKER] + EXTRA_TICKERS))
     start = datetime.now() - timedelta(days=400)
     data = {}
 
-    try:
-        df = yf.download(all_tickers, start=start, progress=False, group_by='ticker')
-    except Exception:
-        df = pd.DataFrame()
+    # Pour chaque position, chercher le premier ticker qui fonctionne
+    for pos in POSITIONS:
+        for t in pos["tickers"]:
+            df = download_ticker(t, start)
+            if not df.empty:
+                # Stocker les données avec le ticker utilisé (le clé sera le ticker)
+                data[t] = df
+                break  # on garde le premier qui répond
 
-    if isinstance(df.columns, pd.MultiIndex):
-        for t in all_tickers:
-            if t in df.columns.levels[0]:
-                tmp = df[t].copy()
-                if not tmp.empty:
-                    data[t] = tmp
-    elif not df.empty and len(all_tickers) == 1:
-        data[all_tickers[0]] = df
+    # Télécharger les autres tickers (benchmark et extra)
+    all_extra = [BENCHMARK_TICKER] + EXTRA_TICKERS
+    for t in all_extra:
+        if t not in data:
+            df = download_ticker(t, start)
+            if not df.empty:
+                data[t] = df
 
-    # Tickters manquants : essai individuel
-    for t in all_tickers:
-        if t not in data or data[t].empty:
-            try:
-                single = yf.download(t, start=start, progress=False)
-                if not single.empty:
-                    data[t] = single
-            except Exception:
-                pass
+    # Télécharger le taux de change EUR/USD pour conversion éventuelle du GLD
+    if "EURUSD=X" not in data:
+        eur_usd_df = download_ticker("EURUSD=X", start)
+        if not eur_usd_df.empty:
+            data["EURUSD=X"] = eur_usd_df
+
     return data
 
 def compute_sma(series, window):
@@ -113,40 +141,48 @@ def compute_rsi(series, period=14):
 # ---------- CHARGEMENT ----------
 data = load_all_data()
 if not data:
-    st.error("Impossible de récupérer les données. Vérifiez votre connexion.")
+    st.error("Aucune donnée récupérée. Vérifiez votre connexion.")
     st.stop()
 
-# Extraction des prix de clôture **derniers historiques disponibles**
-latest_prices = {}
-for t, df in data.items():
-    if not df.empty and "Close" in df.columns:
-        latest_prices[t] = safe_last(df["Close"])
-    else:
-        latest_prices[t] = None
+# Extraction du taux de change EUR/USD (si GLD utilisé)
+eur_usd_rate = None
+if "EURUSD=X" in data and not data["EURUSD=X"].empty:
+    eur_usd_rate = safe_last(data["EURUSD=X"]["Close"])
 
-# ---------- CALCUL DU PORTEFEUILLE (toujours sur prix réels disponibles) ----------
+# Mapping des tickers utilisés vers les positions
+ticker_used = {}
+latest_prices = {}
+for pos in POSITIONS:
+    # trouver parmi les tickers utilisés celui qui correspond
+    used = None
+    for t in pos["tickers"]:
+        if t in data and not data[t].empty:
+            used = t
+            break
+    ticker_used[pos["nom"]] = used
+    if used:
+        prix = safe_last(data[used]["Close"])
+        # Si le ticker est GLD (en USD), convertir en EUR
+        if used == "GLD" and eur_usd_rate:
+            prix = prix / eur_usd_rate
+        latest_prices[used] = prix
+    else:
+        latest_prices[pos["nom"]] = None
+
+# ---------- CALCUL DU PORTEFEUILLE ----------
 positions_calculees = []
 valeur_totale = 0.0
 for pos in POSITIONS:
-    ticker = pos["ticker"]
-    prix = latest_prices.get(ticker)
+    ticker = ticker_used[pos["nom"]]
+    prix = None
+    if ticker:
+        prix = latest_prices.get(ticker)
     if prix is None or np.isnan(prix):
-        # Si aucune donnée historique, on exclut
-        positions_calculees.append({
-            "nom": pos["nom"],
-            "prix": None,
-            "valeur": 0.0,
-            "perf": None
-        })
+        positions_calculees.append({"nom": pos["nom"], "prix": None, "valeur": 0.0, "perf": None})
     else:
         valeur = pos["parts"] * prix
         perf = (prix - pos["prm"]) / pos["prm"] * 100
-        positions_calculees.append({
-            "nom": pos["nom"],
-            "prix": prix,
-            "valeur": valeur,
-            "perf": perf
-        })
+        positions_calculees.append({"nom": pos["nom"], "prix": prix, "valeur": valeur, "perf": perf})
         valeur_totale += valeur
 
 gain_net = valeur_totale - CAPITAL_INITIAL
@@ -155,17 +191,19 @@ perf_totale = (gain_net / CAPITAL_INITIAL) * 100 if CAPITAL_INITIAL != 0 else 0
 # Benchmark CW8
 perf_world = None
 gap = None
-bench_price = latest_prices.get(BENCHMARK_TICKER)
-if bench_price and BENCHMARK_TICKER in data and not data[BENCHMARK_TICKER].empty:
+bench_price = None
+if BENCHMARK_TICKER in data and not data[BENCHMARK_TICKER].empty:
     cw8_series = data[BENCHMARK_TICKER]["Close"].squeeze()
-    try:
-        start_val = cw8_series.loc[DATE_DEBUT.strftime("%Y-%m-%d")]
-        start_val = to_float(start_val.iloc[0]) if isinstance(start_val, pd.Series) else to_float(start_val)
-    except KeyError:
-        start_val = to_float(cw8_series.iloc[0])  # première valeur dispo
-    if start_val and start_val > 0:
-        perf_world = (bench_price / start_val - 1) * 100
-        gap = perf_totale - perf_world
+    bench_price = safe_last(cw8_series)
+    if bench_price:
+        try:
+            start_val = cw8_series.loc[DATE_DEBUT.strftime("%Y-%m-%d")]
+            start_val = to_float(start_val.iloc[0]) if isinstance(start_val, pd.Series) else to_float(start_val)
+        except KeyError:
+            start_val = to_float(cw8_series.iloc[0])
+        if start_val and start_val > 0:
+            perf_world = (bench_price / start_val - 1) * 100
+            gap = perf_totale - perf_world
 
 # ---------- INDICATEURS HYDROGÈNE ----------
 anrj_series = None
@@ -192,9 +230,9 @@ if aasi_series is not None and len(aasi_series) >= 50:
     aasi_sma50 = compute_sma(aasi_series, 50)
     aasi_sma50_now = safe_last(aasi_sma50)
     if BENCHMARK_TICKER in data and not data[BENCHMARK_TICKER].empty:
-        cw8_series = data[BENCHMARK_TICKER]["Close"].squeeze()
-        if cw8_series is not None and len(cw8_series) >= 20:
-            ratio = aasi_series / cw8_series
+        cw8_s = data[BENCHMARK_TICKER]["Close"].squeeze()
+        if cw8_s is not None and len(cw8_s) >= 20:
+            ratio = aasi_series / cw8_s
             ratio_avg20 = ratio.rolling(20).mean()
             ratio_current = safe_last(ratio)
             ratio_avg20_now = safe_last(ratio_avg20)
@@ -202,14 +240,9 @@ if aasi_series is not None and len(aasi_series) >= 50:
 # ---------- MACRO ----------
 us10y = dxy = brent = None
 if "^TNX" in data:
-    tnx_series = data["^TNX"]["Close"].squeeze()
-    tnx_raw = safe_last(tnx_series)
-    # ^TNX peut être renvoyé comme 4.36 (direct) ou 43.6 (×10). On normalise.
-    if tnx_raw is not None:
-        if tnx_raw > 20:  # probablement ×10
-            us10y = tnx_raw / 10
-        else:
-            us10y = tnx_raw
+    tnx_val = safe_last(data["^TNX"]["Close"].squeeze())
+    if tnx_val is not None:
+        us10y = tnx_val / 10 if tnx_val > 20 else tnx_val
 
 if "DX-Y.NYB" in data:
     dxy = safe_last(data["DX-Y.NYB"]["Close"].squeeze())
@@ -285,29 +318,24 @@ st.caption(f"Données au {datetime.now().strftime('%d/%m/%Y %H:%M')} (dernières
 
 st.markdown("### 📈 Performance Globale")
 c1,c2,c3 = st.columns(3)
-val_str = f"{valeur_totale:,.2f}€" if not np.isnan(valeur_totale) else "N/A"
-gain_str = f"{gain_net:+,.2f}€" if not np.isnan(gain_net) else "N/A"
-perf_str = f"{perf_totale:+.2f}%" if not np.isnan(perf_totale) else "N/A"
-c1.metric("Valeur totale", val_str)
-c2.metric("Gain net", gain_str)
-c3.metric("Performance", perf_str)
+c1.metric("Valeur totale", f"{valeur_totale:,.2f}€")
+c2.metric("Gain net", f"{gain_net:+,.2f}€")
+c3.metric("Performance", f"{perf_totale:+.2f}%")
 
 if perf_world is not None:
     c4,c5 = st.columns(2)
     c4.metric("Perf. World (CW8)", f"{perf_world:+.2f}%")
-    gap_str = f"{gap:+.2f}%" if gap is not None and not np.isnan(gap) else "N/A"
-    c5.metric("GAP vs World", gap_str)
+    c5.metric("GAP vs World", f"{gap:+.2f}%")
 
 st.markdown("#### Détail des positions")
 cols = st.columns(len(positions_calculees))
 for i, p in enumerate(positions_calculees):
     with cols[i]:
-        prix_str = f"{p['prix']:.2f}€" if p['prix'] is not None and not np.isnan(p['prix']) else "N/A"
-        perf_str = f"{p['perf']:+.2f}%" if p['perf'] is not None and not np.isnan(p['perf']) else "N/A"
+        prix_str = f"{p['prix']:.2f}€" if p['prix'] is not None else "N/A"
+        perf_str = f"{p['perf']:+.2f}%" if p['perf'] is not None else "N/A"
         st.metric(label=p['nom'], value=prix_str, delta=perf_str)
 
-# Feu tricolore
-bg = {"red": "#dc3545", "orange": "#fd7e14", "green": "#28a745"}.get(decision_color, "#6c757d")
+bg = {"red":"#dc3545","orange":"#fd7e14","green":"#28a745"}.get(decision_color, "#6c757d")
 st.markdown(f"<div class='big-verdict' style='background-color:{bg};'>{decision_globale}</div>", unsafe_allow_html=True)
 
 st.subheader("🔎 Détails Hydrogène (ANRJ)")
@@ -317,7 +345,8 @@ if anrj_current:
     d2.metric("SMA50", f"{anrj_sma50_now:.2f}€" if anrj_sma50_now else "N/A")
     d3.metric("RSI", f"{anrj_rsi_now:.1f}" if anrj_rsi_now else "N/A")
     st.caption(evaluate_hydrogen()[0])
-else: st.warning("ANRJ indisponible")
+else:
+    st.warning("ANRJ indisponible")
 
 st.subheader("🌏 Détails EM Asia (AASI)")
 if aasi_current:
@@ -329,7 +358,8 @@ if aasi_current:
         e3.metric("Ratio AASI/CW8", f"{ratio_current:.4f}")
         e4.metric("Ratio moy. 20j", f"{ratio_avg20_now:.4f}" if ratio_avg20_now else "N/A")
     st.caption(evaluate_em_asia()[0])
-else: st.warning("AASI indisponible")
+else:
+    st.warning("AASI indisponible")
 
 st.subheader("🧭 Indicateurs Macro")
 m1,m2,m3,m4 = st.columns(4)
@@ -339,4 +369,4 @@ m3.metric("Brent", f"{brent:.2f}$" if brent is not None else "N/A")
 m4.metric("Bloom Energy", f"{bloom_close:.2f}$" if bloom_close is not None else "N/A")
 
 st.markdown("---")
-st.caption("Système décisionnel Core & Satellite · Document strictement personnel")
+st.caption("Système décisionnel Core & Satellite · Ne constitue pas un conseil en investissement")
