@@ -46,7 +46,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Titre principal
 st.title("⚡ Dashboard Décisionnel ANRJ")
 st.caption("Contrôle quotidien 2 min · Données en temps réel")
 
@@ -64,7 +63,7 @@ def load_data():
     }
     
     today = datetime.now()
-    start_hist = today - timedelta(days=365)  # 1 an de données
+    start_hist = today - timedelta(days=365)
 
     data = {}
     try:
@@ -75,28 +74,50 @@ def load_data():
         tnx = yf.download(tickers["US10Y"], start=start_hist, progress=False)
         brent = yf.download(tickers["Brent"], start=start_hist, progress=False)
 
-        # Dernières valeurs
+        # Vérifier que les DataFrames ne sont pas vides
+        def last_close(df):
+            if df is None or len(df) == 0:
+                return None
+            return float(df["Close"].iloc[-1])
+
+        def prev_close(df):
+            if df is None or len(df) < 2:
+                return last_close(df)
+            return float(df["Close"].iloc[-2])
+
+        anrj_last = last_close(anrj)
+        anrj_prev = prev_close(anrj)
+        be_last = last_close(be)
+        be_prev = prev_close(be)
+        world_last = last_close(world)
+        world_prev = prev_close(world)
+        tnx_last = float(tnx["Close"].iloc[-1]) / 10 if len(tnx) > 0 else None
+        brent_last = last_close(brent)
+        brent_prev = prev_close(brent)
+
+        if any(v is None for v in [anrj_last, be_last, world_last, tnx_last, brent_last]):
+            st.error("Impossible de récupérer toutes les données. Vérifiez les symboles.")
+            return None
+
         data["ANRJ"] = {
-            "close": float(anrj["Close"].iloc[-1]),
-            "prev_close": float(anrj["Close"].iloc[-2]) if len(anrj) > 1 else float(anrj["Close"].iloc[-1]),
+            "close": anrj_last,
+            "prev_close": anrj_prev,
             "history": anrj
         }
         data["BE"] = {
-            "close": float(be["Close"].iloc[-1]),
-            "prev_close": float(be["Close"].iloc[-2]) if len(be) > 1 else float(be["Close"].iloc[-1]),
+            "close": be_last,
+            "prev_close": be_prev,
             "history": be
         }
         data["World"] = {
-            "close": float(world["Close"].iloc[-1]),
-            "prev_close": float(world["Close"].iloc[-2]) if len(world) > 1 else float(world["Close"].iloc[-1]),
+            "close": world_last,
+            "prev_close": world_prev,
             "history": world
         }
-        # US10Y : ^TNX donne une valeur *10 (ex: 43.60 = 4.360%)
-        tnx_value = float(tnx["Close"].iloc[-1]) / 10
-        data["US10Y"] = {"value": tnx_value}
+        data["US10Y"] = {"value": tnx_last}
         data["Brent"] = {
-            "close": float(brent["Close"].iloc[-1]),
-            "prev_close": float(brent["Close"].iloc[-2]) if len(brent) > 1 else float(brent["Close"].iloc[-1])
+            "close": brent_last,
+            "prev_close": brent_prev
         }
         return data
     except Exception as e:
@@ -114,7 +135,6 @@ if data is None:
 def compute_sma(series, window):
     return series.rolling(window=window).mean()
 
-# ANRJ
 anrj_hist = data["ANRJ"]["history"]
 anrj_hist["SMA50"] = compute_sma(anrj_hist["Close"], 50)
 anrj_hist["SMA200"] = compute_sma(anrj_hist["Close"], 200)
@@ -122,7 +142,6 @@ current_sma50 = float(anrj_hist["SMA50"].iloc[-1])
 current_sma200 = float(anrj_hist["SMA200"].iloc[-1])
 anrj_close = data["ANRJ"]["close"]
 
-# BE
 be_hist = data["BE"]["history"]
 be_hist["SMA50"] = compute_sma(be_hist["Close"], 50)
 be_sma50 = float(be_hist["SMA50"].iloc[-1])
@@ -143,7 +162,7 @@ world_4w = get_4w_returns(world_hist)
 def last_n_days_under_sma(hist, n_days=5):
     if len(hist) < n_days or "SMA50" not in hist.columns:
         return False
-    last_days = hist.iloc[-n_days:]  # y compris aujourd'hui
+    last_days = hist.iloc[-n_days:]
     if last_days["SMA50"].isna().any():
         return False
     return all(last_days["Close"] < last_days["SMA50"])
@@ -215,16 +234,13 @@ else:
 # 4. MATRICE SITUATION → ACTION
 # ---------------------------
 def determine_action():
-    # STOP-LOSS absolu : ANRJ < PRM réel (706€)
     if anrj_close < 706:
         return "🚨 STOP-LOSS 50% : Arbitrer 50% vers MSCI World immédiatement."
 
-    # Crise totale : 5 conditions simultanées (Nasdaq non dispo, on simule avec indicateurs)
     be_peak = float(be_hist["High"].rolling(window=252).max().iloc[-2]) if len(be_hist) >= 252 else float(be_hist["High"].max())
     bloom_drop_from_peak = (be_close / be_peak - 1) if be_peak > 0 else 0
-    # Nasdaq -10% rapide simplifié : baisse de BE de plus de 25% (proxy)
     conditions_crise = [
-        be_close < be_peak * 0.75,                     # Bloom -25% depuis pic
+        be_close < be_peak * 0.75,
         us10y > 5.00,
         brent_close < 80,
         bloom_drop_from_peak < -0.25,
@@ -233,39 +249,30 @@ def determine_action():
     if all(conditions_crise):
         return "🔴 PROTOCOLE CRISE TOTALE : Réduire Hydrogen à 10% maximum. Arbitrage massif vers World."
 
-    # RÉDUCTION 25% immédiate : sous SMA50 depuis 5 séances
     if under_sma50_5d:
         return "🔻 RÉDUCTION 25% : Arbitrer 25% Hydrogen → MSCI World. Exécution froide."
 
-    # MODE DÉFENSIF : US10Y > 4.60% + Bloom chute (> -2% jour)
     if us10y > 4.60 and be_delta_pct < -2:
         return "🛡️ MODE DÉFENSIF : Réduire 15% immédiatement. Stopper tout renforcement thématique."
 
-    # TAKE-PROFIT : ANRJ > 812€
     if anrj_close > 812:
         return "💰 TAKE-PROFIT 30% : Arbitrer 30% Hydrogen → MSCI World. Conserver le reste."
 
-    # RÉDUCTION PROGRESSIVE : World surperforme 4 semaines + ANRJ sous SMA50
     if anrj_4w is not None and world_4w is not None and world_4w > anrj_4w and anrj_close < current_sma50:
         return "📉 RÉDUCTION PROGRESSIVE : Réduire 15% Hydrogen → World. Réévaluer dans 2 semaines."
 
-    # MAINTIEN OFFENSIF : Brent > 105$ + Bloom forte hausse (> +2% jour)
     if brent_close > 105 and be_delta_pct > 2:
         return "🟢 MAINTIEN OFFENSIF : Conditions idéales. Aucune action."
 
-    # VIGILANCE RENFORCÉE : ANRJ entre 752€ et 758€
     if 752 <= anrj_close <= 758:
         return "⚠️ VIGILANCE RENFORCÉE : Arrêter renforcement. Surveiller chaque jour."
 
-    # MAINTIEN standard : ANRJ > SMA50 + World sous-performe (ANRJ >= World sur 4 sem.)
     if anrj_close > current_sma50 and anrj_4w is not None and world_4w is not None and anrj_4w >= world_4w:
         return "✅ MAINTIEN : Tendance intacte. Ne rien faire."
 
-    # CONSERVER si Bloom nouveau plus haut
     if be_new_high:
         return "🌟 CONSERVER : Signal très positif pour ANRJ. Attendre objectif 812€."
 
-    # Par défaut, si aucune condition majeure → surveillance légère
     return "ℹ️ SURVEILLANCE : Aucun signal fort. Continuer le suivi quotidien."
 
 action_reco = determine_action()
@@ -273,7 +280,6 @@ action_reco = determine_action()
 # ---------------------------
 # 5. AFFICHAGE MOBILE
 # ---------------------------
-# Verdict principal
 st.markdown(f"""
 <div class="big-verdict" style="background-color: {verdict_color};">
     {verdict_phrase}
@@ -283,7 +289,6 @@ st.markdown(f"""
 st.subheader("🚦 Action recommandée")
 st.success(action_reco)
 
-# Métriques principales en cartes
 st.subheader("📊 Indicateurs clés")
 col1, col2 = st.columns(2)
 with col1:
@@ -324,7 +329,6 @@ with col4:
         delta=None
     )
 
-# Questions du jour
 st.subheader("❓ Contrôle quotidien")
 for q in questions:
     emoji = q["true_emoji"] if q["condition"] else q["false_emoji"]
