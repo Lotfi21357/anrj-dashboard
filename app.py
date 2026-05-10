@@ -6,7 +6,13 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="Core & Satellite Décisionnel", page_icon="🛰️", layout="centered", initial_sidebar_state="collapsed")
+# ---------- CONFIGURATION ----------
+st.set_page_config(
+    page_title="Core & Satellite Décisionnel",
+    page_icon="🛰️",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
 st.markdown("""
 <style>
@@ -17,7 +23,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- DONNÉES PORTEFEUILLE ----------
-CAPITAL_INITIAL = 13796.71
+CAPITAL_INITIAL = 13796.71   # €, somme des PRM poche
 DATE_DEBUT = datetime(2025, 9, 17)
 POSITIONS = {
     "MSCI World AV":  {"ticker": "MWRD.L",  "parts": 36.33, "prm": 145.09},
@@ -58,7 +64,6 @@ def load_all_data():
     start = datetime.now() - timedelta(days=400)
     data = {}
 
-    # Tenter un téléchargement groupé
     try:
         df = yf.download(all_tickers, start=start, progress=False, group_by='ticker')
     except Exception:
@@ -70,16 +75,10 @@ def load_all_data():
                 tmp = df[t].copy()
                 if not tmp.empty:
                     data[t] = tmp
-    elif not df.empty:
-        # Un seul ticker téléchargé
-        if len(all_tickers) == 1:
-            t = all_tickers[0]
-            data[t] = df
-        else:
-            # Échec probable -> on passe en individuel
-            pass
+    elif not df.empty and len(all_tickers) == 1:
+        data[all_tickers[0]] = df
 
-    # Pour les tickers manquants, essayer individuellement
+    # Essayer individuellement les tickers manquants
     for t in all_tickers:
         if t not in data or data[t].empty:
             try:
@@ -88,7 +87,6 @@ def load_all_data():
                     data[t] = single
             except Exception:
                 pass
-
     return data
 
 def compute_sma(series, window):
@@ -112,7 +110,6 @@ if data is None or all(df.empty for df in data.values()):
     st.error("Impossible de récupérer les données. Vérifiez votre connexion internet.")
     st.stop()
 
-# Extraire prix de clôture
 latest_prices = {}
 for t, df in data.items():
     if not df.empty and "Close" in df.columns:
@@ -120,7 +117,6 @@ for t, df in data.items():
     else:
         latest_prices[t] = None
 
-# Vérifier les tickers essentiels
 essential = [v["ticker"] for v in POSITIONS.values()]
 missing = [t for t in essential if latest_prices.get(t) is None]
 if missing:
@@ -140,8 +136,9 @@ for nom, pos in POSITIONS.items():
 gain_net = valeur_totale - CAPITAL_INITIAL
 perf_totale = (gain_net / CAPITAL_INITIAL) * 100
 
-# ---------- BENCHMARK CW8 ----------
-perf_world = gain = None
+# ---------- BENCHMARK CW8 (corrigé) ----------
+perf_world = None
+gap = None
 bench_price = latest_prices.get(BENCHMARK_TICKER)
 if bench_price and BENCHMARK_TICKER in data and not data[BENCHMARK_TICKER].empty:
     cw8_series = data[BENCHMARK_TICKER]["Close"].squeeze()
@@ -152,7 +149,7 @@ if bench_price and BENCHMARK_TICKER in data and not data[BENCHMARK_TICKER].empty
         start_val = to_float(cw8_series.iloc[0])
     if start_val and start_val > 0:
         perf_world = (bench_price / start_val - 1) * 100
-        gain = perf_totale - perf_world
+        gap = perf_totale - perf_world
 
 # ---------- INDICATEURS HYDROGÈNE ----------
 anrj_series = None
