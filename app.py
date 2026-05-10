@@ -24,6 +24,26 @@ st.markdown("""
 st.title("⚡ Dashboard Décisionnel ANRJ")
 st.caption("Contrôle quotidien 2 min · Données en temps réel")
 
+# Fonction robuste pour extraire un scalaire
+def safe_last_value(series):
+    """Retourne le dernier élément d'une Series comme float, ou None si impossible."""
+    if series is None or series.empty:
+        return None
+    try:
+        val = series.iloc[-1]
+        if isinstance(val, (np.floating, np.integer, float, int)):
+            return float(val)
+        elif isinstance(val, pd.Series):
+            # Si c'est encore une Series, extraire son unique élément
+            if len(val) == 1:
+                return float(val.iloc[0])
+            else:
+                return float(val.iloc[-1])
+        else:
+            return float(val)
+    except:
+        return None
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_data():
     tickers = {
@@ -43,38 +63,37 @@ def load_data():
         tnx = yf.download(tickers["US10Y"], start=start_hist, progress=False)
         brent = yf.download(tickers["Brent"], start=start_hist, progress=False)
 
-        def get_last_close(df):
+        # S'assurer que l'on a des DataFrames valides
+        for name, df in zip(["ANRJ", "BE", "World", "TNX", "Brent"], [anrj, be, world, tnx, brent]):
             if df is None or df.empty:
+                st.error(f"Données manquantes pour {name}")
                 return None
-            return float(df["Close"].iloc[-1])
 
-        def get_prev_close(df):
-            if df is None or df.empty:
-                return None
-            if len(df) < 2:
-                return get_last_close(df)
-            return float(df["Close"].iloc[-2])
+        # Extraction des prix de clôture comme séries (éventuellement avec squeeze)
+        anrj_close_series = anrj["Close"].squeeze()
+        be_close_series = be["Close"].squeeze()
+        world_close_series = world["Close"].squeeze()
+        brent_close_series = brent["Close"].squeeze()
+        tnx_close_series = tnx["Close"].squeeze()  # ^TNX est déjà multiplié par 10 dans Yahoo
 
-        anrj_last = get_last_close(anrj)
-        anrj_prev = get_prev_close(anrj)
-        be_last = get_last_close(be)
-        be_prev = get_prev_close(be)
-        world_last = get_last_close(world)
-        world_prev = get_prev_close(world)
+        anrj_last = safe_last_value(anrj_close_series)
+        anrj_prev = safe_last_value(anrj_close_series.shift(1))  # utilise shift pour sécuriser
+        be_last = safe_last_value(be_close_series)
+        be_prev = safe_last_value(be_close_series.shift(1))
+        world_last = safe_last_value(world_close_series)
+        world_prev = safe_last_value(world_close_series.shift(1))
+        tnx_value = safe_last_value(tnx_close_series) / 10 if safe_last_value(tnx_close_series) is not None else None
+        brent_last = safe_last_value(brent_close_series)
+        brent_prev = safe_last_value(brent_close_series.shift(1))
 
-        if tnx.empty or brent.empty:
-            return None
-        tnx_last = float(tnx["Close"].iloc[-1]) / 10
-        brent_last = get_last_close(brent)
-        brent_prev = get_prev_close(brent)
-
-        if any(v is None for v in [anrj_last, be_last, world_last, tnx_last, brent_last]):
+        if any(v is None for v in [anrj_last, be_last, world_last, tnx_value, brent_last]):
+            st.error("Valeurs manquantes après extraction.")
             return None
 
         data["ANRJ"] = {"close": anrj_last, "prev_close": anrj_prev, "history": anrj}
         data["BE"] = {"close": be_last, "prev_close": be_prev, "history": be}
         data["World"] = {"close": world_last, "prev_close": world_prev, "history": world}
-        data["US10Y"] = {"value": tnx_last}
+        data["US10Y"] = {"value": tnx_value}
         data["Brent"] = {"close": brent_last, "prev_close": brent_prev}
         return data
     except Exception as e:
@@ -85,43 +104,58 @@ data = load_data()
 if data is None:
     st.stop()
 
+# ---- Indicateurs ----
 def compute_sma(series, window):
     return series.rolling(window=window).mean()
 
 anrj_hist = data["ANRJ"]["history"]
-anrj_hist["SMA50"] = compute_sma(anrj_hist["Close"], 50)
-anrj_hist["SMA200"] = compute_sma(anrj_hist["Close"], 200)
-current_sma50 = float(anrj_hist["SMA50"].iloc[-1])
-current_sma200 = float(anrj_hist["SMA200"].iloc[-1])
+anrj_close_series = anrj_hist["Close"].squeeze()
+sma50_series = compute_sma(anrj_close_series, 50)
+sma200_series = compute_sma(anrj_close_series, 200)
+current_sma50 = safe_last_value(sma50_series)
+current_sma200 = safe_last_value(sma200_series)
 anrj_close = data["ANRJ"]["close"]
 
 be_hist = data["BE"]["history"]
-be_hist["SMA50"] = compute_sma(be_hist["Close"], 50)
-be_sma50 = float(be_hist["SMA50"].iloc[-1])
+be_close_series = be_hist["Close"].squeeze()
+be_sma50_series = compute_sma(be_close_series, 50)
+be_sma50 = safe_last_value(be_sma50_series)
 be_close = data["BE"]["close"]
 
-def get_4w_returns(hist):
-    if len(hist) >= 21:
-        return (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-21]) - 1)
-    return None
+# Performance 4 semaines
+def get_4w_returns(df):
+    if df is None or len(df) < 21:
+        return None
+    series = df["Close"].squeeze()
+    return float(series.iloc[-1]) / float(series.iloc[-21]) - 1
 
 anrj_4w = get_4w_returns(anrj_hist)
 world_hist = data["World"]["history"]
 world_4w = get_4w_returns(world_hist)
 
-def last_n_days_under_sma(hist, n_days=5):
-    if len(hist) < n_days or "SMA50" not in hist.columns:
+# 5 séances sous SMA50
+def last_n_days_under_sma(df, n_days=5):
+    if df is None or len(df) < n_days:
         return False
-    last_days = hist.iloc[-n_days:]
-    if last_days["SMA50"].isna().any():
+    close_s = df["Close"].squeeze()
+    sma50_s = close_s.rolling(50).mean()
+    last_close = close_s.iloc[-n_days:]
+    last_sma = sma50_s.iloc[-n_days:]
+    if last_sma.isna().any():
         return False
-    return all(last_days["Close"] < last_days["SMA50"])
+    return all(last_close.values < last_sma.values)
 
 under_sma50_5d = last_n_days_under_sma(anrj_hist)
 
-be_high_52w = float(be_hist["High"].rolling(window=252).max().iloc[-2]) if len(be_hist) >= 252 else float(be_hist["High"].max())
-be_new_high = be_close > be_high_52w
+# Bloom nouveau plus haut 52 semaines
+be_high_52w = None
+if len(be_hist) >= 252:
+    be_high_52w = safe_last_value(be_hist["High"].squeeze().rolling(252).max().shift(1))
+else:
+    be_high_52w = np.max(be_hist["High"].squeeze())
+be_new_high = be_close > be_high_52w if be_high_52w is not None else False
 
+# Variations journalières
 anrj_delta = anrj_close - data["ANRJ"]["prev_close"]
 anrj_delta_pct = (anrj_delta / data["ANRJ"]["prev_close"]) * 100
 be_delta = be_close - data["BE"]["prev_close"]
@@ -131,6 +165,7 @@ brent_prev = data["Brent"]["prev_close"]
 brent_delta = brent_close - brent_prev
 us10y = data["US10Y"]["value"]
 
+# ---- Contrôle quotidien ----
 questions = [
     {
         "q": f"1. ANRJ au-dessus de SMA200 ({current_sma200:.2f}€) ?",
@@ -175,11 +210,16 @@ else:
     verdict_phrase = "🔴 ALERTE – Conditions dégradées"
     verdict_color = "#f8d7da"
 
+# ---- Matrice situation → action ----
 def determine_action():
     if anrj_close < 706:
         return "🚨 STOP-LOSS 50% : Arbitrer 50% vers MSCI World immédiatement."
-    be_peak = float(be_hist["High"].rolling(window=252).max().iloc[-2]) if len(be_hist) >= 252 else float(be_hist["High"].max())
-    bloom_drop = (be_close / be_peak - 1) if be_peak > 0 else 0
+    be_peak = None
+    if len(be_hist) >= 252:
+        be_peak = safe_last_value(be_hist["High"].squeeze().rolling(252).max().shift(1))
+    if be_peak is None:
+        be_peak = np.max(be_hist["High"].squeeze())
+    bloom_drop = (be_close / be_peak - 1) if be_peak and be_peak > 0 else 0
     conditions_crise = [
         be_close < be_peak * 0.75,
         us10y > 5.00,
@@ -209,6 +249,7 @@ def determine_action():
 
 action_reco = determine_action()
 
+# ---- Affichage ----
 st.markdown(f"""
 <div class="big-verdict" style="background-color:{verdict_color};">
 {verdict_phrase}
