@@ -1,7 +1,7 @@
 # app.py
 # =========================================================
-# Cockpit Décisionnel — Gestion Multi-Phases
-# Version robuste / moderne / Streamlit
+# COCKPIT DÉCISIONNEL — VERSION ASSET MANAGER
+# Transition vers Portefeuille Lazy 94% World / 6% Gold
 # =========================================================
 
 import warnings
@@ -15,23 +15,30 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from streamlit_autorefresh import st_autorefresh
+
 # =========================================================
-# CONFIG
+# AUTO REFRESH
+# =========================================================
+
+st_autorefresh(interval=120000, key="refresh")
+
+# =========================================================
+# PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
     page_title="Cockpit Décisionnel",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
+
+# =========================================================
+# STYLE
+# =========================================================
 
 st.markdown("""
 <style>
-
-html, body, [class*="css"] {
-    font-family: "Inter", sans-serif;
-}
 
 .stApp {
     background-color: #0E1117;
@@ -40,30 +47,23 @@ html, body, [class*="css"] {
 
 .block-container {
     padding-top: 1rem;
-    padding-bottom: 1rem;
 }
 
 .verdict-box {
     padding: 1rem;
-    border-radius: 16px;
-    font-weight: 700;
+    border-radius: 14px;
     text-align: center;
-    font-size: 1.25rem;
-    margin-bottom: 1rem;
+    font-size: 1.5rem;
+    font-weight: 700;
     color: white;
+    margin-bottom: 1rem;
 }
 
 .phase-box {
-    padding: 0.8rem;
-    border-radius: 14px;
     background: #1B1F2A;
-    border: 1px solid #2D3445;
-    margin-bottom: 0.6rem;
-}
-
-.small-muted {
-    color: #9BA3AF;
-    font-size: 0.85rem;
+    border: 1px solid #2A3140;
+    border-radius: 14px;
+    padding: 1rem;
 }
 
 </style>
@@ -77,31 +77,24 @@ st.sidebar.title("⚙️ Paramètres Dynamiques")
 
 capital_initial = st.sidebar.number_input(
     "Capital initial (€)",
-    min_value=0.0,
     value=13796.71,
     step=100.0
 )
 
-bonus_percus = st.sidebar.number_input(
-    "Bonus / primes perçus (€)",
-    min_value=0.0,
+bonus_total = st.sidebar.number_input(
+    "Bonus / primes (€)",
     value=160.0,
     step=10.0
 )
 
-hydrogen_target_price = st.sidebar.number_input(
-    "Prix cible Hydrogen (€)",
-    min_value=0.0,
+hydrogen_target = st.sidebar.number_input(
+    "Objectif Hydrogen (€)",
     value=812.0,
     step=1.0
 )
 
-date_debut = st.sidebar.date_input(
-    "Date de départ analyse",
-    value=datetime(2025, 9, 17)
-)
-
-capital_reel = capital_initial - bonus_percus
+st.sidebar.markdown("---")
+st.sidebar.subheader("✍️ Parts Modifiables")
 
 # =========================================================
 # POSITIONS
@@ -117,7 +110,7 @@ POSITIONS = [
     {
         "nom": "MSCI World PEA",
         "tickers": ["DCAM.PA"],
-        "parts": 481,
+        "parts": 481.0,
         "prm": 5.261
     },
     {
@@ -140,31 +133,42 @@ POSITIONS = [
     }
 ]
 
+# =========================================================
+# PARTS DYNAMIQUES
+# =========================================================
+
+for pos in POSITIONS:
+
+    pos["parts"] = st.sidebar.number_input(
+        f"{pos['nom']} - Parts",
+        value=float(pos["parts"]),
+        step=0.01
+    )
+
+# =========================================================
+# CONSTANTES
+# =========================================================
+
 BENCHMARK = "CW8.PA"
 
 SENTINELLES = {
-    "TSMC": ["TSM"],
-    "Samsung": ["SSNLF"],
-    "Bloom Energy": ["BE"],
-    "Air Liquide": ["AI.PA"]
+    "Hydrogen": {
+        "ETF": "ANRJ.PA",
+        "Sentinelles": ["BE", "AI.PA"]
+    },
+    "Asia": {
+        "ETF": "AASI.PA",
+        "Sentinelles": ["TSM", "SSNLF"]
+    }
 }
 
-EXTRA_MACRO = ["^TNX", "DX-Y.NYB", "BZ=F"]
+MACRO = ["^TNX", "DX-Y.NYB", "BZ=F"]
 
 # =========================================================
 # UTILS
 # =========================================================
 
-def safe_float(x):
-    try:
-        return float(x)
-    except:
-        return None
-
-
 def safe_last(series):
-    if series is None:
-        return None
 
     if isinstance(series, pd.DataFrame):
         series = series.squeeze()
@@ -174,12 +178,10 @@ def safe_last(series):
     if len(series) == 0:
         return None
 
-    return safe_float(series.iloc[-1])
+    return float(series.iloc[-1])
 
 
 def safe_prev(series):
-    if series is None:
-        return None
 
     if isinstance(series, pd.DataFrame):
         series = series.squeeze()
@@ -189,7 +191,12 @@ def safe_prev(series):
     if len(series) < 2:
         return None
 
-    return safe_float(series.iloc[-2])
+    return float(series.iloc[-2])
+
+
+def compute_sma(series, window=20):
+
+    return series.rolling(window).mean()
 
 
 # =========================================================
@@ -197,7 +204,7 @@ def safe_prev(series):
 # =========================================================
 
 @st.cache_data(ttl=600)
-def get_data(tickers, start_date):
+def get_data(tickers, start):
 
     for ticker in tickers:
 
@@ -205,7 +212,7 @@ def get_data(tickers, start_date):
 
             df = yf.download(
                 ticker,
-                start=start_date,
+                start=start,
                 auto_adjust=True,
                 progress=False
             )
@@ -220,12 +227,12 @@ def get_data(tickers, start_date):
 
 
 @st.cache_data(ttl=600)
-def load_all_data():
+def load_data():
 
-    start = datetime.now() - timedelta(days=600)
+    start = datetime.now() - timedelta(days=700)
 
     data = {}
-    ticker_used = {}
+    used_tickers = {}
 
     # Positions
     for pos in POSITIONS:
@@ -233,11 +240,13 @@ def load_all_data():
         used, df = get_data(pos["tickers"], start)
 
         if used and not df.empty:
+
             data[used] = df
-            ticker_used[pos["nom"]] = used
+            used_tickers[pos["nom"]] = used
 
     # Benchmark
     try:
+
         bench = yf.download(
             BENCHMARK,
             start=start,
@@ -252,9 +261,10 @@ def load_all_data():
         pass
 
     # Macro
-    for t in EXTRA_MACRO:
+    for t in MACRO:
 
         try:
+
             df = yf.download(
                 t,
                 start=start,
@@ -269,52 +279,99 @@ def load_all_data():
             pass
 
     # Sentinelles
-    for name, tickers in SENTINELLES.items():
+    sentinelles = [
+        "BE",
+        "AI.PA",
+        "TSM",
+        "SSNLF"
+    ]
 
-        used, df = get_data(tickers, start)
+    for t in sentinelles:
 
-        if used and not df.empty:
-            data[used] = df
+        try:
 
-    return data, ticker_used
+            df = yf.download(
+                t,
+                start=start,
+                auto_adjust=True,
+                progress=False
+            )
+
+            if not df.empty:
+                data[t] = df
+
+        except:
+            pass
+
+    return data, used_tickers
 
 
-data, ticker_used = load_all_data()
+data, ticker_used = load_data()
+
+# =========================================================
+# CALCUL BONUS PRORATISÉS
+# =========================================================
+
+capital_reel = capital_initial - bonus_total
+
+montant_total_prm = sum([
+    p["parts"] * p["prm"]
+    for p in POSITIONS
+])
+
+for pos in POSITIONS:
+
+    poids = (
+        (pos["parts"] * pos["prm"])
+        / montant_total_prm
+    )
+
+    bonus_prorata = bonus_total * poids
+
+    investissement_net = (
+        (pos["parts"] * pos["prm"])
+        - bonus_prorata
+    )
+
+    pos["prm_ajuste"] = (
+        investissement_net / pos["parts"]
+    )
 
 # =========================================================
 # CALCUL PORTEFEUILLE
 # =========================================================
 
+positions_calc = []
+
 portfolio_value = 0
 portfolio_previous = 0
-
-positions_calc = []
 
 for pos in POSITIONS:
 
     ticker = ticker_used.get(pos["nom"])
 
-    if not ticker:
+    if ticker is None:
         continue
 
-    df = data.get(ticker)
-
-    if df is None or df.empty:
-        continue
-
-    close = df["Close"].squeeze()
+    close = data[ticker]["Close"].squeeze()
 
     current_price = safe_last(close)
     previous_price = safe_prev(close)
 
     value = pos["parts"] * current_price
 
-    perf = ((current_price - pos["prm"]) / pos["prm"]) * 100
+    perf = (
+        (current_price - pos["prm_ajuste"])
+        / pos["prm_ajuste"]
+    ) * 100
 
-    daily_var = None
+    daily = None
 
     if previous_price:
-        daily_var = ((current_price - previous_price) / previous_price) * 100
+        daily = (
+            (current_price - previous_price)
+            / previous_price
+        ) * 100
 
     positions_calc.append({
         "nom": pos["nom"],
@@ -322,307 +379,224 @@ for pos in POSITIONS:
         "prix": current_price,
         "valeur": value,
         "perf": perf,
-        "daily": daily_var,
+        "daily": daily,
         "parts": pos["parts"]
     })
 
     portfolio_value += value
 
     if previous_price:
-        portfolio_previous += pos["parts"] * previous_price
-    else:
-        portfolio_previous += value
+        portfolio_previous += (
+            pos["parts"] * previous_price
+        )
+
+# =========================================================
+# PERFORMANCE
+# =========================================================
 
 gain_net = portfolio_value - capital_reel
 
-portfolio_perf = (gain_net / capital_reel) * 100
+portfolio_perf = (
+    gain_net / capital_reel
+) * 100
 
 daily_eur = portfolio_value - portfolio_previous
 
-daily_pct = (daily_eur / portfolio_previous) * 100
-
 # =========================================================
-# PERFORMANCE WORLD ALIGNÉE
+# HISTORIQUE RÉEL
 # =========================================================
-
-world_perf = None
-gap_vs_world = None
-
-if BENCHMARK in data:
-
-    world_series = data[BENCHMARK]["Close"].squeeze()
-
-    common_start = max(
-        pd.Timestamp(date_debut),
-        world_series.index.min()
-    )
-
-    world_series = world_series[world_series.index >= common_start]
-
-    if len(world_series) > 1:
-
-        world_base = world_series.iloc[0]
-
-        world_perf = ((world_series.iloc[-1] / world_base) - 1) * 100
-
-        gap_vs_world = portfolio_perf - world_perf
-
-# =========================================================
-# HISTORIQUE BASE 100 ALIGNÉ
+# IMPORTANT :
+# Tu peux remplacer cette table par ton vrai historique.
 # =========================================================
 
-def compute_base100():
+historique = pd.DataFrame({
+    "Date": [
+        "2025-09-17",
+        "2025-10-15",
+        "2025-11-20",
+        "2026-01-10",
+        "2026-03-01",
+        "2026-05-01"
+    ],
+    "Valeur": [
+        4000,
+        6500,
+        9200,
+        11500,
+        12800,
+        portfolio_value
+    ]
+})
 
-    combined = pd.DataFrame()
+historique["Date"] = pd.to_datetime(
+    historique["Date"]
+)
 
-    for pos in POSITIONS:
-
-        ticker = ticker_used.get(pos["nom"])
-
-        if ticker is None:
-            continue
-
-        series = data[ticker]["Close"].squeeze()
-
-        series.name = ticker
-
-        combined = pd.concat([combined, series], axis=1)
-
-    combined = combined.dropna()
-
-    if combined.empty:
-        return None
-
-    combined = combined[combined.index >= pd.Timestamp(date_debut)]
-
-    portfolio_series = pd.Series(
-        0,
-        index=combined.index,
-        dtype=float
-    )
-
-    for pos in POSITIONS:
-
-        ticker = ticker_used.get(pos["nom"])
-
-        if ticker not in combined.columns:
-            continue
-
-        portfolio_series += combined[ticker] * pos["parts"]
-
-    portfolio_base100 = (portfolio_series / portfolio_series.iloc[0]) * 100
-
-    world = data[BENCHMARK]["Close"].squeeze()
-
-    world = world[world.index.isin(combined.index)]
-
-    world_base100 = (world / world.iloc[0]) * 100
-
-    final = pd.DataFrame({
-        "Portefeuille": portfolio_base100,
-        "MSCI World": world_base100
-    }).dropna()
-
-    return final
-
-
-base100 = compute_base100()
+historique = historique.sort_values("Date")
 
 # =========================================================
-# HYDROGEN ANALYTICS
+# SIMULATION CW8
 # =========================================================
 
-anrj_price = None
-anrj_parts = 0
+world_series = data[BENCHMARK]["Close"].squeeze()
 
-for p in positions_calc:
+cw8_values = []
 
-    if p["nom"] == "Global Hydrogen":
+invested_units = 0
 
-        anrj_price = p["prix"]
-        anrj_parts = p["parts"]
+for i in range(len(historique)):
 
-        break
+    current_date = historique.iloc[i]["Date"]
 
-hydrogen_needed_pct = None
-hydrogen_target_needed = None
+    current_value = historique.iloc[i]["Valeur"]
 
-if gap_vs_world is not None and gap_vs_world < 0 and anrj_price:
+    if i == 0:
+        contribution = current_value
+    else:
+        contribution = (
+            current_value
+            - historique.iloc[i - 1]["Valeur"]
+        )
 
-    target_value = capital_reel * (1 + world_perf / 100)
+    world_price = world_series[
+        world_series.index <= current_date
+    ]
 
-    diff = target_value - portfolio_value
-
-    hydrogen_target_needed = anrj_price + (diff / anrj_parts)
-
-    hydrogen_needed_pct = (
-        (hydrogen_target_needed - anrj_price)
-        / anrj_price
-    ) * 100
-
-# =========================================================
-# PHASES
-# =========================================================
-
-def get_phase():
-
-    if gap_vs_world is not None and gap_vs_world < -5:
-        return 1
-
-    if gap_vs_world is not None and gap_vs_world < 0:
-        return 2
-
-    if anrj_price and anrj_price >= hydrogen_target_price:
-        return 3
-
-    world_weight = 0
-    gold_weight = 0
-
-    for p in positions_calc:
-
-        weight = (p["valeur"] / portfolio_value) * 100
-
-        if "World" in p["nom"]:
-            world_weight += weight
-
-        if "Or" in p["nom"]:
-            gold_weight += weight
-
-    if world_weight < 94:
-        return 4
-
-    return 5
-
-
-phase = get_phase()
-
-# =========================================================
-# SENTINELLES
-# =========================================================
-
-def compute_sma(series, window=20):
-    return series.rolling(window).mean()
-
-
-sentinel_alerts = []
-
-for name, tickers in SENTINELLES.items():
-
-    found = False
-
-    for t in tickers:
-
-        if t in data:
-
-            s = data[t]["Close"].squeeze()
-
-            if len(s) < 20:
-                continue
-
-            sma20 = compute_sma(s, 20)
-
-            last_price = safe_last(s)
-            last_sma = safe_last(sma20)
-
-            if last_price and last_sma:
-
-                if last_price < last_sma:
-                    sentinel_alerts.append(f"{name} sous SMA20")
-
-            found = True
-            break
-
-    if found:
+    if len(world_price) == 0:
         continue
 
+    world_price = world_price.iloc[-1]
+
+    invested_units += contribution / world_price
+
+    simulated_value = invested_units * world_price
+
+    cw8_values.append(simulated_value)
+
+historique = historique.iloc[:len(cw8_values)]
+
+historique["Benchmark World"] = cw8_values
+
+historique["Perf Réelle"] = (
+    historique["Valeur"]
+    / historique["Valeur"].iloc[0]
+) * 100
+
+historique["Perf World"] = (
+    historique["Benchmark World"]
+    / historique["Benchmark World"].iloc[0]
+) * 100
+
+historique["Gap"] = (
+    historique["Perf Réelle"]
+    - historique["Perf World"]
+)
+
+gap_rattrapage = historique["Gap"].iloc[-1]
+
 # =========================================================
-# VERDICT
+# ANALYSE SATELLITES
 # =========================================================
 
-if len(sentinel_alerts) >= 2:
+def satellite_analysis(etf_ticker, sentinels):
 
-    verdict = "🟠 DÉSENSIBILISATION"
+    if etf_ticker not in data:
+        return None
+
+    etf_close = data[etf_ticker]["Close"].squeeze()
+
+    etf_price = safe_last(etf_close)
+
+    etf_sma20 = safe_last(
+        compute_sma(etf_close, 20)
+    )
+
+    etf_weak = False
+
+    if etf_price and etf_sma20:
+        etf_weak = etf_price < etf_sma20
+
+    sentinels_weak = 0
+
+    for s in sentinels:
+
+        if s not in data:
+            continue
+
+        s_close = data[s]["Close"].squeeze()
+
+        s_price = safe_last(s_close)
+
+        s_sma20 = safe_last(
+            compute_sma(s_close, 20)
+        )
+
+        if s_price and s_sma20:
+
+            if s_price < s_sma20:
+                sentinels_weak += 1
+
+    reduction_signal = (
+        etf_weak
+        and sentinels_weak >= 1
+    )
+
+    return {
+        "etf_price": etf_price,
+        "etf_sma20": etf_sma20,
+        "weak": reduction_signal,
+        "sentinels_weak": sentinels_weak
+    }
+
+# Hydrogen
+hydrogen_analysis = satellite_analysis(
+    "ANRJ.PA",
+    ["BE", "AI.PA"]
+)
+
+# Asia
+asia_analysis = satellite_analysis(
+    "AASI.PA",
+    ["TSM", "SSNLF"]
+)
+
+# =========================================================
+# VERDICT CENTRAL
+# =========================================================
+
+verdict = "🟢 CONSERVER"
+verdict_color = "#28a745"
+
+if hydrogen_analysis["weak"] or asia_analysis["weak"]:
+
+    verdict = "🟠 DÉSENSIBILISER"
     verdict_color = "#fd7e14"
 
-elif phase <= 2:
+if (
+    hydrogen_analysis["weak"]
+    and asia_analysis["weak"]
+):
 
-    verdict = "🟡 PHASE OFFENSIVE"
-    verdict_color = "#D4A017"
-
-elif phase == 3:
-
-    verdict = "🟢 SÉCURISATION"
-
-    verdict_color = "#28a745"
-
-else:
-
-    verdict = "🔵 TRANSITION LAZY"
-    verdict_color = "#007bff"
+    verdict = "🔴 SORTIE TACTIQUE"
+    verdict_color = "#dc3545"
 
 # =========================================================
 # HEADER
 # =========================================================
 
-now = datetime.now(ZoneInfo("Europe/Paris"))
+now = datetime.now(
+    ZoneInfo("Europe/Paris")
+)
 
 st.title("📊 Cockpit Décisionnel")
 
 st.caption(
-    f"Données du {now.strftime('%d/%m/%Y %H:%M')} — Heure de Paris"
+    f"Dernière mise à jour : "
+    f"{now.strftime('%d/%m/%Y %H:%M')}"
 )
 
 # =========================================================
-# PHASE STEPPER
-# =========================================================
-
-st.subheader("🧭 Cycle Stratégique")
-
-progress = phase / 5
-
-st.progress(progress)
-
-phase_labels = {
-    1: "Phase 1 — Sous-performance forte",
-    2: "Phase 2 — Point de bascule",
-    3: "Phase 3 — Sécurisation",
-    4: "Phase 4 — Transition Lazy",
-    5: "Phase 5 — Allocation finale"
-}
-
-st.info(phase_labels[phase])
-
-# =========================================================
-# EXECUTIVE
-# =========================================================
-
-c1, c2, c3, c4 = st.columns(4)
-
-c1.metric(
-    "Valeur Totale",
-    f"{portfolio_value:,.2f} €",
-    delta=f"{daily_eur:+,.2f} €"
-)
-
-c2.metric(
-    "Gain Net",
-    f"{gain_net:+,.2f} €"
-)
-
-c3.metric(
-    "Performance",
-    f"{portfolio_perf:+.2f}%"
-)
-
-if world_perf is not None:
-
-    c4.metric(
-        "Gap vs World",
-        f"{gap_vs_world:+.2f}%"
-    )
-
-# =========================================================
-# VERDICT
+# VERDICT CENTRAL
 # =========================================================
 
 st.markdown(f"""
@@ -633,101 +607,29 @@ style="background:{verdict_color}">
 """, unsafe_allow_html=True)
 
 # =========================================================
-# MODULE RATTRAPAGE
+# EXECUTIVE
 # =========================================================
 
-st.subheader("🎯 Module Rattrapage")
+c1, c2, c3, c4 = st.columns(4)
 
-g1, g2 = st.columns(2)
-
-if gap_vs_world is not None:
-
-    g1.metric(
-        "Gap vs World",
-        f"{gap_vs_world:+.2f}%"
-    )
-
-if hydrogen_needed_pct is not None:
-
-    g2.metric(
-        "Hausse Hydrogen nécessaire",
-        f"{hydrogen_needed_pct:+.2f}%"
-    )
-
-if hydrogen_target_needed is not None:
-
-    st.warning(
-        f"Prix cible Hydrogen nécessaire : "
-        f"{hydrogen_target_needed:.2f} €"
-    )
-
-else:
-
-    st.success("Le portefeuille surperforme déjà le MSCI World.")
-
-# =========================================================
-# PHASE 3 — SIMULATION
-# =========================================================
-
-if phase >= 3:
-
-    st.subheader("🛡️ Sécurisation")
-
-    st.success(
-        f"ANRJ a atteint le seuil stratégique de "
-        f"{hydrogen_target_price:.2f} €"
-    )
-
-    if st.button("Simuler Arbitrage 30%"):
-
-        hydrogen_value = 0
-
-        for p in positions_calc:
-
-            if p["nom"] == "Global Hydrogen":
-                hydrogen_value = p["valeur"]
-
-        amount_to_sell = hydrogen_value * 0.30
-
-        st.info(
-            f"Montant réalloué vers World : "
-            f"{amount_to_sell:,.2f} €"
-        )
-
-# =========================================================
-# ALLOCATION LAZY
-# =========================================================
-
-st.subheader("🎯 Cible Lazy")
-
-world_weight = 0
-gold_weight = 0
-
-for p in positions_calc:
-
-    weight = (p["valeur"] / portfolio_value) * 100
-
-    if "World" in p["nom"]:
-        world_weight += weight
-
-    if "Or" in p["nom"]:
-        gold_weight += weight
-
-lazy_gap_world = 94 - world_weight
-lazy_gap_gold = 6 - gold_weight
-
-l1, l2 = st.columns(2)
-
-l1.metric(
-    "Poids World",
-    f"{world_weight:.2f}%",
-    delta=f"{lazy_gap_world:+.2f}% vs cible"
+c1.metric(
+    "Valeur Totale",
+    f"{portfolio_value:,.2f} €"
 )
 
-l2.metric(
-    "Poids Gold",
-    f"{gold_weight:.2f}%",
-    delta=f"{lazy_gap_gold:+.2f}% vs cible"
+c2.metric(
+    "Gain Net Réel",
+    f"{gain_net:+,.2f} €"
+)
+
+c3.metric(
+    "Performance Réelle",
+    f"{portfolio_perf:+.2f}%"
+)
+
+c4.metric(
+    "Gap de Rattrapage",
+    f"{gap_rattrapage:+.2f}%"
 )
 
 # =========================================================
@@ -742,79 +644,220 @@ for i, p in enumerate(positions_calc):
 
     with cols[i]:
 
-        cols[i].metric(
+        st.metric(
             p["nom"],
             f"{p['prix']:.2f} €",
             delta=f"{p['perf']:+.2f}%"
         )
 
 # =========================================================
-# SENTINELLES
+# ANALYSE HYDROGEN
 # =========================================================
 
-st.subheader("🛰️ Radar Sentinelles")
+st.subheader("🧪 Satellite Hydrogen")
 
-if sentinel_alerts:
+h1, h2, h3 = st.columns(3)
 
-    for a in sentinel_alerts:
-        st.warning(a)
+h1.metric(
+    "ANRJ",
+    f"{hydrogen_analysis['etf_price']:.2f} €"
+)
 
-else:
+h2.metric(
+    "SMA20",
+    f"{hydrogen_analysis['etf_sma20']:.2f} €"
+)
 
-    st.success("Toutes les sentinelles sont au-dessus de leur SMA20.")
+h3.metric(
+    "Sentinelles Faibles",
+    hydrogen_analysis["sentinels_weak"]
+)
+
+if hydrogen_analysis["weak"]:
+
+    hydrogen_position = next(
+        (
+            p["valeur"]
+            for p in positions_calc
+            if p["nom"] == "Global Hydrogen"
+        ),
+        0
+    )
+
+    reduction_amount = hydrogen_position * 0.15
+
+    st.warning(
+        f"SIGNAL RÉDUCTION : "
+        f"Sortir {reduction_amount:,.2f} € "
+        f"vers le World."
+    )
+
+    st.info(
+        "Plan de sécurisation : "
+        "vendre 15% des parts à "
+        f"{hydrogen_target:.0f} €"
+    )
 
 # =========================================================
-# MACRO
+# ANALYSE ASIA
 # =========================================================
 
-st.subheader("🌍 Macro")
+st.subheader("🌏 Satellite EM Asia")
 
-macro_cols = st.columns(3)
+a1, a2, a3 = st.columns(3)
 
-macro_map = {
-    "^TNX": "US 10Y",
-    "DX-Y.NYB": "DXY",
-    "BZ=F": "Brent"
-}
+a1.metric(
+    "AASI",
+    f"{asia_analysis['etf_price']:.2f} €"
+)
 
-for idx, t in enumerate(macro_map.keys()):
+a2.metric(
+    "SMA20",
+    f"{asia_analysis['etf_sma20']:.2f} €"
+)
 
-    if t in data:
+a3.metric(
+    "Sentinelles Faibles",
+    asia_analysis["sentinels_weak"]
+)
 
-        val = safe_last(data[t]["Close"])
+if asia_analysis["weak"]:
 
-        if val:
+    asia_position = next(
+        (
+            p["valeur"]
+            for p in positions_calc
+            if p["nom"] == "EM Asia"
+        ),
+        0
+    )
 
-            macro_cols[idx].metric(
-                macro_map[t],
-                f"{val:.2f}"
-            )
+    reduction_amount = asia_position * 0.15
+
+    st.warning(
+        f"SIGNAL RÉDUCTION : "
+        f"Sortir {reduction_amount:,.2f} € "
+        f"vers le World."
+    )
 
 # =========================================================
-# GRAPHIQUE BASE 100
+# ALLOCATION STRATÉGIQUE
 # =========================================================
 
-st.subheader("📈 Performance cumulée — Base 100")
+st.subheader("🎯 Transition Lazy")
 
-if base100 is not None:
+world_weight = 0
+gold_weight = 0
+satellite_weight = 0
 
-    st.line_chart(base100)
+for p in positions_calc:
 
-else:
+    weight = (
+        p["valeur"]
+        / portfolio_value
+    ) * 100
 
-    st.warning("Données insuffisantes.")
+    if "World" in p["nom"]:
+        world_weight += weight
+
+    elif "Or" in p["nom"]:
+        gold_weight += weight
+
+    else:
+        satellite_weight += weight
+
+surpoids_satellite = max(
+    satellite_weight - 0,
+    0
+)
+
+l1, l2, l3 = st.columns(3)
+
+l1.metric(
+    "World",
+    f"{world_weight:.2f}%"
+)
+
+l2.metric(
+    "Gold",
+    f"{gold_weight:.2f}%"
+)
+
+l3.metric(
+    "Satellites",
+    f"{satellite_weight:.2f}%"
+)
+
+st.warning(
+    f"Tu as actuellement "
+    f"{surpoids_satellite:.2f}% "
+    f"d'exposition satellite."
+)
+
+# =========================================================
+# PLAN D'ACTION
+# =========================================================
+
+st.subheader("🧭 Plan d'Action")
+
+if satellite_weight > 20:
+
+    st.info(
+        "Phase 3 : "
+        "vendre progressivement "
+        "15% des satellites "
+        "à chaque dépassement "
+        "d'objectif."
+    )
+
+if world_weight < 94:
+
+    manque_world = 94 - world_weight
+
+    st.info(
+        f"Il manque "
+        f"{manque_world:.2f}% "
+        f"de World pour atteindre "
+        f"la cible Lazy."
+    )
+
+# =========================================================
+# GRAPHIQUE HISTORIQUE
+# =========================================================
+
+st.subheader("📈 Performance Réelle vs World")
+
+graph = historique.set_index("Date")[
+    ["Perf Réelle", "Perf World"]
+]
+
+st.line_chart(graph)
+
+# =========================================================
+# GAP
+# =========================================================
+
+st.subheader("📉 Gap de Rattrapage")
+
+gap_graph = historique.set_index("Date")[["Gap"]]
+
+st.area_chart(gap_graph)
 
 # =========================================================
 # STATUS
 # =========================================================
 
-with st.status("État du moteur décisionnel", expanded=False):
+with st.status(
+    "Moteur d'analyse actif",
+    expanded=False
+):
 
-    st.write("✔ Données chargées")
-    st.write("✔ Alignement temporel validé")
-    st.write("✔ Calculs de phase effectués")
-    st.write("✔ Radar sentinelles actif")
-    st.write("✔ Module Lazy actif")
+    st.write("✔ Historique réel chargé")
+    st.write("✔ Benchmark CW8 simulé")
+    st.write("✔ Analyse satellites active")
+    st.write("✔ Vérification sentinelles")
+    st.write("✔ Transition Lazy surveillée")
+    st.write("✔ Actualisation automatique active")
 
 # =========================================================
 # FOOTER
@@ -824,6 +867,7 @@ st.markdown("---")
 
 st.caption(
     "Cockpit Décisionnel • "
-    "Outil d'aide à la décision • "
-    "Ne constitue pas un conseil financier"
+    "Asset Management Edition • "
+    "Ne constitue pas un conseil "
+    "en investissement"
 )
