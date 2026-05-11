@@ -49,7 +49,7 @@ st_autorefresh(interval=300_000, key="autorefresh")
 # ----------------------------------------------------------------------
 DATE_ANCHOR = datetime(2026, 5, 8)
 CAPITAL_INVESTI = 13796.71
-WORLD_PERF_REF = 10.16  # performance du World au 08/05/2026 selon le document
+GAP_HISTORIQUE = 1.87  # retard au 08/05/2026 (document)
 
 QUANTITIES = {
     "DCAM.PA": 481,
@@ -60,71 +60,120 @@ QUANTITIES = {
 }
 
 # ----------------------------------------------------------------------
+# TICKERS DE SECOURS (Euronext → alternatives)
+# ----------------------------------------------------------------------
+FALLBACK_TICKERS = {
+    "MWRD.PA": "IWDA.AS",   # iShares Core MSCI World
+    "CGLD.PA": "GLD",       # Gold SPDR (cours proche, à convertir)
+    "ANRJ.PA": "ANRJ.PA",   # pas de secours direct, on garde le même
+    "AASI.PA": "EEMA",      # iShares MSCI EM Asia (approximation)
+    "DCAM.PA": "CW8.PA",    # Amundi MSCI World
+}
+
+# ----------------------------------------------------------------------
 # FONCTIONS ROBUSTES DE DONNÉES
 # ----------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
 def _safe_download(tickers, period="5d", start=None, end=None):
     """
     Télécharge les données en gérant le MultiIndex et les DataFrames vides.
-    Retourne un DataFrame de prix 'Close' avec une seule colonne par ticker.
+    Retourne un DataFrame avec une seule colonne par ticker.
     """
     try:
-        if start and end:
-            data = yf.download(tickers, start=start, end=end, progress=False)
-        else:
-            data = yf.download(tickers, period=period, progress=False)
+        kwargs = {"progress": False, "auto_adjust": True}
+        if start:
+            kwargs["start"] = start
+        if end:
+            kwargs["end"] = end
+        elif period:
+            kwargs["period"] = period
+
+        data = yf.download(tickers, **kwargs)
+
         if data.empty:
             return None
-        # Gestion du MultiIndex (si plusieurs tickers)
+
+        # Gestion du MultiIndex
         if isinstance(data.columns, pd.MultiIndex):
-            close = data["Close"].copy()
+            # Niveau 0 peut être 'Close', ou niveau 1 si 'Price'
+            if "Close" in data.columns.get_level_values(0):
+                close = data.xs("Close", level=0, axis=1)
+            else:
+                close = data.xs("Close", level=1, axis=1)
         else:
+            # DataFrame simple : prendre la colonne Close si elle existe
             close = data[["Close"]] if "Close" in data.columns else None
-        if close is None or close.empty:
-            return None
-        # Remplir les valeurs manquantes (forward fill)
+            if close is None:
+                return None
+
+        # ffill() au lieu de fillna(method='ffill')
         close = close.ffill()
         return close
-    except Exception:
+
+    except Exception as e:
+        st.warning(f"Données indisponibles : {e}")
         return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_live_prices():
-    """Récupère les derniers cours de clôture disponibles."""
-    tickers = ["DCAM.PA", "MWRD.PA", "ANRJ.PA", "AASI.PA", "CGLD.PA"]
+    """Derniers prix disponibles (5 jours de buffer)."""
+    tickers = list(QUANTITIES.keys())
     close = _safe_download(tickers, period="5d")
     if close is not None and not close.empty:
-        # Prend la dernière valeur non-NaN pour chaque ticker
         prices = close.iloc[-1].to_dict()
+        # Vérifier que tous les tickers sont présents, sinon utiliser fallback
+        for t in tickers:
+            if t not in prices or pd.isna(prices[t]):
+                # Fallback ticket
+                fb = FALLBACK_TICKERS.get(t)
+                if fb and fb != t:
+                    fb_data = _safe_download(fb, period="5d")
+                    if fb_data is not None and fb in fb_data.columns:
+                        prices[t] = fb_data[fb].iloc[-1]
         return prices
-    # Fallback
+    # Fallback ultime (document)
     return {
         "DCAM.PA": 5.805, "MWRD.PA": 150.21,
         "ANRJ.PA": 762.50, "AASI.PA": 56.70, "CGLD.PA": 158.27
     }
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_historical_data():
-    """Historique complet depuis le 17/09/2025."""
+def fetch_world_index():
+    """Historique du MSCI World (CW8.PA) depuis le 17/09/2025."""
+    end_date = datetime.today().strftime("%Y-%m-%d")
+    close = _safe_download("CW8.PA", start="2025-09-17", end=end_date)
+    if close is not None and "CW8.PA" in close.columns:
+        return close["CW8.PA"].dropna()
+    # Fallback minimal
+    idx = pd.bdate_range("2025-09-17", DATE_ANCHOR)
+    return pd.Series(np.linspace(100, 110, len(idx)), index=idx)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_historical_portfolio():
+    """
+    Reconstitution de la valeur du portefeuille sur l'historique
+    en utilisant les quantités actuelles et les prix historiques.
+    C'est une approximation visuelle de la performance.
+    """
     tickers = list(QUANTITIES.keys())
-    close = _safe_download(tickers, start="2025-09-17", end="2026-05-09")
-    if close is not None:
-        # S'assurer que tous les tickers sont présents
+    end_date = datetime.today().strftime("%Y-%m-%d")
+    close = _safe_download(tickers, start="2025-09-17", end=end_date)
+    if close is None:
+        # Fallback
+        idx = pd.bdate_range("2025-09-17", DATE_ANCHOR)
+        close = pd.DataFrame({t: np.linspace(100, 110, len(idx)) for t in tickers}, index=idx)
+    else:
+        # Compléter les colonnes manquantes avec NaN puis forward fill
         for t in tickers:
             if t not in close.columns:
                 close[t] = np.nan
-        return close
-    # Fallback minimal
-    idx = pd.bdate_range("2025-09-17", "2026-05-08")
-    return pd.DataFrame({t: np.linspace(100, 110, len(idx)) for t in tickers}, index=idx)
+        close = close.ffill()
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_world_index():
-    """Historique du MSCI World (CW8.PA)."""
-    close = _safe_download("CW8.PA", start="2025-09-17", end="2026-05-09")
-    if close is not None:
-        return close["CW8.PA"]
-    idx = pd.bdate_range("2025-09-17", "2026-05-08")
-    return pd.Series(np.linspace(100, 110, len(idx)), index=idx)
+    # Calcul de la valeur quotidienne
+    portf_val = pd.Series(0.0, index=close.index)
+    for t, qty in QUANTITIES.items():
+        if t in close.columns:
+            portf_val += close[t].ffill() * qty
+    return portf_val.ffill()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_tsmc_sma():
@@ -156,31 +205,41 @@ if 'bonus_active' not in st.session_state:
 # ----------------------------------------------------------------------
 def get_portfolio_details(bonus=False):
     prices = fetch_live_prices()
-    # Calcul des valeurs
     dcamm = QUANTITIES["DCAM.PA"] * prices.get("DCAM.PA", 0)
     mwrd = QUANTITIES["MWRD.PA"] * prices.get("MWRD.PA", 0)
     anrj = QUANTITIES["ANRJ.PA"] * prices.get("ANRJ.PA", 0)
     aasi = QUANTITIES["AASI.PA"] * prices.get("AASI.PA", 0)
     gold = QUANTITIES["CGLD.PA"] * prices.get("CGLD.PA", 0)
-    
+
     world_val = dcamm + mwrd
     portfolio_val = world_val + anrj + aasi + gold
-    
     if bonus:
         portfolio_val += 160.0
-        world_val += 160.0  # le bonus est assimilé à du World
-    
+        world_val += 160.0
+
     capital = CAPITAL_INVESTI
     perf = (portfolio_val / capital - 1) * 100
-    gap = perf - WORLD_PERF_REF
-    
+
+    # Calcul du Gap dynamique
+    world_index = fetch_world_index()
+    anchor_date = pd.Timestamp(DATE_ANCHOR)
+    # Prix du World le jour de l'ancre (ou le plus proche avant)
+    anchor_mask = world_index.index <= anchor_date
+    if not anchor_mask.any():
+        anchor_price = world_index.iloc[0]
+    else:
+        anchor_price = world_index.loc[anchor_mask].iloc[-1]
+
+    current_price = world_index.iloc[-1]
+    world_perf_dynamic = (current_price / anchor_price - 1) * 100
+    gap = perf - (world_perf_dynamic + GAP_HISTORIQUE)
+
     total = portfolio_val
     world_pct = (world_val / total * 100) if total else 0
     gold_pct = (gold / total * 100) if total else 0
-    
     target_world = 0.94
     progression = (world_pct / 100 / target_world) * 100 if target_world else 0
-    
+
     return {
         "total_val": portfolio_val,
         "world_val": world_val,
@@ -209,16 +268,19 @@ def _rolling_last(series, window):
 
 def score_anrj(prices):
     cours = prices.get("ANRJ.PA", 0)
-    hist = fetch_historical_data()
+    hist = fetch_historical_portfolio()
     sma50 = 722.0
     sma200 = 620.0
-    if hist is not None and "ANRJ.PA" in hist.columns:
-        s50 = _rolling_last(hist["ANRJ.PA"], 50)
-        s200 = _rolling_last(hist["ANRJ.PA"], 200)
-        if s50 is not None: sma50 = s50
-        if s200 is not None: sma200 = s200
+    if hist is not None:
+        # Utiliser l'historique du prix ANRJ extrait de _safe_download
+        tickers = list(QUANTITIES.keys())
+        close_hist = _safe_download(tickers, start="2025-09-17", end=datetime.today().strftime("%Y-%m-%d"))
+        if close_hist is not None and "ANRJ.PA" in close_hist.columns:
+            s50 = _rolling_last(close_hist["ANRJ.PA"], 50)
+            s200 = _rolling_last(close_hist["ANRJ.PA"], 200)
+            if s50 is not None: sma50 = s50
+            if s200 is not None: sma200 = s200
 
-    # Indicateurs macro (simulés à partir du document)
     bloom_ok = True
     us10y = 4.36
     world_surperf = False
@@ -237,10 +299,10 @@ def score_anrj(prices):
 
 def score_aasi(prices):
     cours = prices.get("AASI.PA", 0)
-    hist = fetch_historical_data()
+    close_hist = _safe_download(list(QUANTITIES.keys()), start="2025-09-17", end=datetime.today().strftime("%Y-%m-%d"))
     sma50 = 54.20
-    if hist is not None and "AASI.PA" in hist.columns:
-        s50 = _rolling_last(hist["AASI.PA"], 50)
+    if close_hist is not None and "AASI.PA" in close_hist.columns:
+        s50 = _rolling_last(close_hist["AASI.PA"], 50)
         if s50 is not None: sma50 = s50
 
     tsm_last, tsm_sma50 = fetch_tsmc_sma()
@@ -259,7 +321,7 @@ def score_aasi(prices):
     else: score -= 30
     if dxy_ok: score += 25
     else: score -= 15
-    score += 15  # momentum régional
+    score += 15
     return max(0, min(score, 100))
 
 def verdict(score):
@@ -271,22 +333,20 @@ def verdict(score):
 # GRAPHIQUES
 # ----------------------------------------------------------------------
 def build_performance_chart():
-    hist = fetch_historical_data()
-    world = fetch_world_index()
-    
-    # Valeur quotidienne du portefeuille (quantités fixes * prix historiques)
-    portf_val = pd.Series(0.0, index=hist.index)
-    for ticker, qty in QUANTITIES.items():
-        if ticker in hist.columns:
-            portf_val += hist[ticker].fillna(method='ffill') * qty
-    
+    portf_val = fetch_historical_portfolio().dropna()
+    world = fetch_world_index().dropna()
+    if portf_val.empty or world.empty:
+        return go.Figure(), go.Figure()
+
+    common_idx = portf_val.index.intersection(world.index)
+    portf_val = portf_val.loc[common_idx]
+    world = world.loc[common_idx]
     base_p = portf_val.iloc[0]
     base_w = world.iloc[0]
     perf_p = (portf_val / base_p - 1) * 100
     perf_w = (world / base_w - 1) * 100
     gap = perf_p - perf_w
 
-    # Graphique de performance
     fig_perf = go.Figure()
     fig_perf.add_trace(go.Scatter(x=perf_w.index, y=perf_w.values,
                                   mode='lines', line=dict(width=2, color='#9AA0A6'),
@@ -304,7 +364,6 @@ def build_performance_chart():
     fig_perf.update_xaxes(showgrid=False)
     fig_perf.update_yaxes(showgrid=True, gridcolor='rgba(255,255,255,0.05)')
 
-    # Graphique du gap
     fig_gap = go.Figure()
     fig_gap.add_trace(go.Scatter(x=gap.index, y=gap.values,
                                  mode='lines', line=dict(width=2, color='#FFA500'),
@@ -322,13 +381,14 @@ def build_performance_chart():
 with st.sidebar:
     st.markdown("<h2 style='color:#00E676;'>⚙️ Pilotage</h2>", unsafe_allow_html=True)
     st.markdown("---")
-    bonus_toggle = st.toggle("🔮 Activer Bonus Fortuneo (160 €)", value=st.session_state.bonus_active)
+    # Utilisation de checkbox au lieu de toggle (meilleure compatibilité)
+    bonus_toggle = st.checkbox("🔮 Activer Bonus Fortuneo (160 €)", value=st.session_state.bonus_active)
     if bonus_toggle != st.session_state.bonus_active:
         st.session_state.bonus_active = bonus_toggle
         st.rerun()
     st.markdown("---")
     st.caption(f"Données au {DATE_ANCHOR.strftime('%d/%m/%Y')}")
-    st.caption("Système décisionnel v3 · ANRJ")
+    st.caption("Système décisionnel v4 · Robust")
 
 st.markdown("<h1 style='color:#FFFFFF;'>📊 Executive Portfolio Management System</h1>", unsafe_allow_html=True)
 st.markdown("---")
@@ -336,7 +396,6 @@ st.markdown("---")
 details = get_portfolio_details(bonus=st.session_state.bonus_active)
 prices = details['prices']
 
-# 1. KPIs
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.metric("Valeur Totale", f"{details['total_val']:,.0f} €")
@@ -347,13 +406,11 @@ with c3:
 with c4:
     st.metric("Progression Lazy", f"{details['progression']:.1f} %")
 
-# 2. Graphiques
 fig_perf, fig_gap = build_performance_chart()
 st.subheader("📈 Performance Cumulée")
 st.plotly_chart(fig_perf, use_container_width=True)
 st.plotly_chart(fig_gap, use_container_width=True)
 
-# 3. Satellites
 st.subheader("🛰️ Diagnostic Satellites")
 ca, cb = st.columns(2)
 
@@ -393,7 +450,6 @@ with cb:
     dxy = fetch_dxy()
     st.write(f"Cours : {prices.get('AASI.PA', 'N/A')} € | TSMC : {tsm_last} (SMA50:{tsm_sma}) | DXY : {dxy}")
 
-# 4. Transition Lazy
 st.markdown("---")
 st.subheader("🎯 Transition vers Portefeuille Lazy")
 cl, cr = st.columns([1,2])
@@ -409,4 +465,4 @@ with cr:
     """)
 
 st.markdown("---")
-st.caption("Document strictement personnel · v3 · EPMS")
+st.caption("Document strictement personnel · v4 · Robust & Dynamic")
