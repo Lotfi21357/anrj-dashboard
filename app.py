@@ -1,9 +1,6 @@
 # =========================================================
-# APP.PY — COCKPIT DÉCISIONNEL INSTITUTIONAL GRADE
-# =========================================================
-# Version complète — prête Streamlit Cloud
-# Gestion stratégique multi-phases
-# Lazy Target : 94% World / 6% Gold
+# APP.PY — HYBRID COCKPIT
+# Institutional Grade Portfolio Dashboard
 # =========================================================
 
 import warnings
@@ -27,11 +24,11 @@ from streamlit_autorefresh import st_autorefresh
 st_autorefresh(interval=120000, key="refresh")
 
 # =========================================================
-# CONFIG
+# PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
-    page_title="Cockpit Décisionnel",
+    page_title="Hybrid Cockpit",
     page_icon="📊",
     layout="wide"
 )
@@ -48,25 +45,13 @@ st.markdown("""
     color: white;
 }
 
-.block-container {
-    padding-top: 1rem;
-}
-
 .verdict-box {
     padding: 1rem;
-    border-radius: 14px;
+    border-radius: 16px;
     text-align: center;
     font-size: 1.5rem;
     font-weight: 700;
     color: white;
-    margin-bottom: 1rem;
-}
-
-.section-box {
-    background: #1B1F2A;
-    border: 1px solid #2A3140;
-    border-radius: 14px;
-    padding: 1rem;
     margin-bottom: 1rem;
 }
 
@@ -79,83 +64,67 @@ st.markdown("""
 
 st.sidebar.title("⚙️ Paramètres")
 
-capital_initial = st.sidebar.number_input(
+capital_investi = st.sidebar.number_input(
     "Capital investi (€)",
     value=13796.71,
     step=100.0
 )
 
-bonus_injected = st.sidebar.slider(
-    "Bonus Fortuneo injectés (€)",
+bonus_fortuneo = st.sidebar.slider(
+    "Bonus Fortuneo (€)",
     min_value=0,
     max_value=1000,
     value=160,
     step=10
 )
 
-hydrogen_phase3 = st.sidebar.number_input(
-    "Seuil Phase 3 Hydrogen (€)",
+hydrogen_alert = st.sidebar.number_input(
+    "Seuil Hydrogen Phase 3 (€)",
     value=812.0,
     step=1.0
 )
 
-st.sidebar.markdown("---")
-
 # =========================================================
-# POSITIONS
+# POSITIONS FIXES
 # =========================================================
 
 POSITIONS = [
     {
-        "nom": "MSCI World AV",
-        "tickers": ["MWRD.PA", "IWDA.AS"],
-        "parts": 36.33,
-        "prm": 145.09,
-        "type": "WORLD"
-    },
-    {
-        "nom": "MSCI World PEA",
-        "tickers": ["DCAM.PA"],
+        "nom": "World PEA",
+        "ticker": "DCAM.PA",
         "parts": 481.0,
         "prm": 5.261,
         "type": "WORLD"
     },
     {
-        "nom": "Global Hydrogen",
-        "tickers": ["ANRJ.PA"],
+        "nom": "Hydrogen",
+        "ticker": "ANRJ.PA",
         "parts": 4.77,
         "prm": 706.06,
         "type": "SATELLITE"
     },
     {
         "nom": "EM Asia",
-        "tickers": ["AASI.PA"],
+        "ticker": "AASI.PA",
         "parts": 40.83,
         "prm": 52.48,
         "type": "SATELLITE"
     },
     {
+        "nom": "World AV",
+        "ticker": "MWRD.PA",
+        "parts": 36.33,
+        "prm": 145.09,
+        "type": "WORLD"
+    },
+    {
         "nom": "Gold",
-        "tickers": ["CGLD.PA", "GLD"],
+        "ticker": "CGLD.PA",
         "parts": 4.59,
         "prm": 163.39,
         "type": "GOLD"
     }
 ]
-
-# =========================================================
-# PARTS DYNAMIQUES
-# =========================================================
-
-st.sidebar.subheader("✍️ Modifier les parts")
-
-for pos in POSITIONS:
-
-    pos["parts"] = st.sidebar.number_input(
-        f"{pos['nom']}",
-        value=float(pos["parts"]),
-        step=0.01
-    )
 
 # =========================================================
 # CONSTANTES
@@ -165,14 +134,13 @@ BENCHMARK = "CW8.PA"
 
 ANCHOR_DATE = pd.Timestamp("2026-05-08")
 
-ANCHOR_PORTFOLIO_VALUE = 14941.00
-ANCHOR_WORLD_PERF = 10.16
+INITIAL_GAP = -1.87
 
 TARGET_WORLD = 94
 TARGET_GOLD = 6
 
 # =========================================================
-# UTILS
+# HELPERS
 # =========================================================
 
 def safe_last(series):
@@ -195,29 +163,28 @@ def compute_sma(series, window=20):
 
     return series.rolling(window).mean()
 
-
-def compute_rsi(series, period=14):
-
-    delta = series.diff()
-
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-
-    rs = avg_gain / avg_loss
-
-    rsi = 100 - (100 / (1 + rs))
-
-    return rsi
-
 # =========================================================
-# DATA LOADER ROBUSTE
+# DATA LOADER
 # =========================================================
 
 @st.cache_data(ttl=600)
-def get_data(tickers, start):
+def load_data():
+
+    start = datetime.now() - timedelta(days=365)
+
+    tickers = [
+        "DCAM.PA",
+        "ANRJ.PA",
+        "AASI.PA",
+        "MWRD.PA",
+        "CGLD.PA",
+        "CW8.PA",
+        "TSM",
+        "SSNLF",
+        "BE"
+    ]
+
+    data = {}
 
     for ticker in tickers:
 
@@ -231,120 +198,28 @@ def get_data(tickers, start):
             )
 
             if not df.empty:
-                return ticker, df
-
-        except:
-            continue
-
-    return None, pd.DataFrame()
-
-@st.cache_data(ttl=600)
-def load_all_data():
-
-    start = datetime.now() - timedelta(days=700)
-
-    data = {}
-    used = {}
-
-    # Positions
-    for pos in POSITIONS:
-
-        ticker, df = get_data(
-            pos["tickers"],
-            start
-        )
-
-        if ticker:
-
-            data[ticker] = df
-            used[pos["nom"]] = ticker
-
-    # Benchmark
-    try:
-
-        bench = yf.download(
-            BENCHMARK,
-            start=start,
-            auto_adjust=True,
-            progress=False
-        )
-
-        if not bench.empty:
-            data[BENCHMARK] = bench
-
-    except:
-        pass
-
-    # Sentinelles
-    extra = [
-        "BE",
-        "AI.PA",
-        "TSM",
-        "SSNLF"
-    ]
-
-    for t in extra:
-
-        try:
-
-            df = yf.download(
-                t,
-                start=start,
-                auto_adjust=True,
-                progress=False
-            )
-
-            if not df.empty:
-                data[t] = df
+                data[ticker] = df
 
         except:
             pass
 
-    return data, used
+    return data
 
-data, used_tickers = load_all_data()
-
-# =========================================================
-# CALCUL BONUS PRORATISÉS
-# =========================================================
-
-total_prm = sum([
-    p["parts"] * p["prm"]
-    for p in POSITIONS
-])
-
-for pos in POSITIONS:
-
-    poids = (
-        (pos["parts"] * pos["prm"])
-        / total_prm
-    )
-
-    bonus_alloc = bonus_injected * poids
-
-    invested_net = (
-        (pos["parts"] * pos["prm"])
-        - bonus_alloc
-    )
-
-    pos["prm_adjusted"] = (
-        invested_net / pos["parts"]
-    )
+data = load_data()
 
 # =========================================================
 # CALCUL PORTEFEUILLE
 # =========================================================
 
-portfolio_value = 0
-portfolio_previous = 0
-
 positions_calc = []
+
+valeur_totale = 0
 
 for pos in POSITIONS:
 
-    ticker = used_tickers.get(pos["nom"])
+    ticker = pos["ticker"]
 
-    if ticker is None:
+    if ticker not in data:
         continue
 
     close = data[ticker]["Close"].squeeze()
@@ -356,125 +231,108 @@ for pos in POSITIONS:
     if current_price is None:
         continue
 
-    value = pos["parts"] * current_price
+    valeur = pos["parts"] * current_price
 
     perf = (
         (
-            current_price
-            - pos["prm_adjusted"]
-        )
-        / pos["prm_adjusted"]
+            current_price - pos["prm"]
+        ) / pos["prm"]
     ) * 100
 
-    daily = None
+    variation = None
 
     if previous_price:
 
-        daily = (
+        variation = (
             (
                 current_price
                 - previous_price
-            )
-            / previous_price
+            ) / previous_price
         ) * 100
 
     positions_calc.append({
         "nom": pos["nom"],
         "ticker": ticker,
         "prix": current_price,
-        "valeur": value,
+        "valeur": valeur,
         "perf": perf,
-        "daily": daily,
-        "parts": pos["parts"],
+        "variation": variation,
         "type": pos["type"]
     })
 
-    portfolio_value += value
-
-    if previous_price:
-        portfolio_previous += (
-            pos["parts"]
-            * previous_price
-        )
+    valeur_totale += valeur
 
 # =========================================================
-# PERFORMANCE RÉELLE
+# CAPITAL AJUSTÉ BONUS
 # =========================================================
 
-valeur_totale_reelle = (
-    portfolio_value + bonus_injected
+capital_ajuste = (
+    capital_investi
+    - bonus_fortuneo
 )
 
-performance_reelle = (
+gain_reel = (
+    valeur_totale
+    - capital_ajuste
+)
+
+performance_portefeuille = (
     (
-        valeur_totale_reelle
-        / capital_initial
+        valeur_totale
+        / capital_ajuste
     ) - 1
 ) * 100
 
-gain_net = (
-    valeur_totale_reelle
-    - capital_initial
-)
-
 # =========================================================
-# WORLD DYNAMIQUE
-# =========================================================
-
-world_perf_dynamic = None
-
-if BENCHMARK in data:
-
-    world_series = data[BENCHMARK]["Close"].squeeze()
-
-    try:
-
-        world_anchor_price = world_series[
-            world_series.index <= ANCHOR_DATE
-        ].iloc[-1]
-
-        world_current_price = safe_last(
-            world_series
-        )
-
-        world_perf_dynamic = (
-            (
-                (
-                    world_current_price
-                    / world_anchor_price
-                )
-                * (
-                    1 + (
-                        ANCHOR_WORLD_PERF / 100
-                    )
-                )
-            ) - 1
-        ) * 100
-
-    except:
-        pass
-
-# =========================================================
-# GAP RÉEL
+# GAP VS WORLD
 # =========================================================
 
 gap_vs_world = None
 
-if world_perf_dynamic is not None:
+if BENCHMARK in data:
 
-    gap_vs_world = (
-        performance_reelle
-        - world_perf_dynamic
-    )
+    world_close = data[
+        BENCHMARK
+    ]["Close"].squeeze()
+
+    try:
+
+        world_anchor = world_close[
+            world_close.index <= ANCHOR_DATE
+        ].iloc[-1]
+
+        world_current = safe_last(
+            world_close
+        )
+
+        world_perf_since_anchor = (
+            (
+                world_current
+                / world_anchor
+            ) - 1
+        ) * 100
+
+        benchmark_reference = (
+            world_perf_since_anchor
+            + abs(INITIAL_GAP)
+        )
+
+        gap_vs_world = (
+            performance_portefeuille
+            - benchmark_reference
+        )
+
+    except:
+        gap_vs_world = None
 
 # =========================================================
-# ANALYSE INSTITUTIONAL GRADE
+# ANALYSE SATELLITE
 # =========================================================
 
-def institutional_analysis(
+def analyze_satellite(
     etf,
     sentinel,
-    current_value
+    position_value
 ):
 
     if (
@@ -483,120 +341,65 @@ def institutional_analysis(
     ):
         return None
 
-    # ETF
-    etf_close = data[etf]["Close"].squeeze()
+    etf_close = data[
+        etf
+    ]["Close"].squeeze()
 
-    etf_price = safe_last(etf_close)
-
-    etf_sma20_series = compute_sma(
-        etf_close,
-        20
-    )
-
-    etf_sma20 = safe_last(
-        etf_sma20_series
-    )
-
-    etf_rsi_series = compute_rsi(
+    etf_price = safe_last(
         etf_close
     )
 
-    etf_rsi = safe_last(
-        etf_rsi_series
+    etf_sma20 = safe_last(
+        compute_sma(etf_close, 20)
     )
 
-    # SENTINELLE
-    sent_close = data[sentinel]["Close"].squeeze()
+    sentinel_close = data[
+        sentinel
+    ]["Close"].squeeze()
 
-    sent_price = safe_last(sent_close)
-
-    sent_sma20_series = compute_sma(
-        sent_close,
-        20
+    sentinel_price = safe_last(
+        sentinel_close
     )
 
-    sent_sma20 = safe_last(
-        sent_sma20_series
+    sentinel_sma20 = safe_last(
+        compute_sma(sentinel_close, 20)
     )
 
-    # CONDITIONS
-    etf_below = (
-        etf_price < etf_sma20
-    )
+    # =====================================================
+    # STATUS
+    # =====================================================
 
-    sent_below = (
-        sent_price < sent_sma20
-    )
-
-    # RISQUE
     status = "🟢 PRÉSERVER"
     color = "green"
 
-    if (
-        etf_below
-        or sent_below
-    ):
-        status = "🟡 RISQUE MODÉRÉ"
-        color = "yellow"
+    if etf_price < etf_sma20:
 
-    if (
-        etf_below
-        and sent_below
-    ):
-        status = "🟠 RISQUE ÉLEVÉ"
+        status = "🟡 RISQUE MODÉRÉ"
         color = "orange"
 
-    # Confirmation 3 jours
-    confirmed = False
-
-    try:
-
-        last3_etf = (
-            etf_close.tail(3)
-            < etf_sma20_series.tail(3)
-        ).all()
-
-        last3_sent = (
-            sent_close.tail(3)
-            < sent_sma20_series.tail(3)
-        ).all()
-
-        confirmed = (
-            last3_etf
-            and last3_sent
-        )
-
-    except:
-        pass
-
-    # Vente tactique
-    current_weight = (
-        current_value
-        / valeur_totale_reelle
-    ) * 100
-
-    target_satellite = 5
-
-    excess_weight = max(
-        current_weight - target_satellite,
-        0
-    )
-
-    amount_to_sell = (
-        excess_weight / 100
-    ) * valeur_totale_reelle
-
     if (
-        confirmed
-        or (
-            etf == "ANRJ.PA"
-            and etf_price >= hydrogen_phase3
-        )
+        etf_price < etf_sma20
+        and sentinel_price < sentinel_sma20
     ):
+
+        # Objectif Lazy 5%
+        current_weight = (
+            position_value
+            / valeur_totale
+        ) * 100
+
+        excess_weight = max(
+            current_weight - 5,
+            0
+        )
+
+        sell_amount = (
+            excess_weight / 100
+        ) * valeur_totale
 
         status = (
             f"🔴 VENDRE "
-            f"{amount_to_sell:,.0f} €"
+            f"{sell_amount:,.0f} €"
         )
 
         color = "red"
@@ -604,73 +407,70 @@ def institutional_analysis(
     return {
         "price": etf_price,
         "sma20": etf_sma20,
-        "rsi": etf_rsi,
-        "sent_price": sent_price,
-        "sent_sma20": sent_sma20,
+        "sentinel": sentinel_price,
+        "sentinel_sma20": sentinel_sma20,
         "status": status,
-        "color": color,
-        "sell_amount": amount_to_sell
+        "color": color
     }
 
 # =========================================================
-# SATELLITES
+# ANALYSE HYDROGEN
 # =========================================================
 
 hydrogen_value = next(
     (
         p["valeur"]
         for p in positions_calc
-        if p["nom"] == "Global Hydrogen"
+        if p["ticker"] == "ANRJ.PA"
     ),
     0
 )
 
-asia_value = next(
-    (
-        p["valeur"]
-        for p in positions_calc
-        if p["nom"] == "EM Asia"
-    ),
-    0
-)
-
-hydrogen_grade = institutional_analysis(
+hydrogen = analyze_satellite(
     "ANRJ.PA",
     "BE",
     hydrogen_value
 )
 
-asia_grade = institutional_analysis(
+# =========================================================
+# ANALYSE ASIA
+# =========================================================
+
+asia_value = next(
+    (
+        p["valeur"]
+        for p in positions_calc
+        if p["ticker"] == "AASI.PA"
+    ),
+    0
+)
+
+asia = analyze_satellite(
     "AASI.PA",
     "TSM",
     asia_value
 )
 
 # =========================================================
-# VERDICT CENTRAL
+# VERDICT GLOBAL
 # =========================================================
 
 verdict = "🟢 CONSERVER"
 verdict_color = "#28a745"
 
 colors = [
-    hydrogen_grade["color"],
-    asia_grade["color"]
+    hydrogen["color"],
+    asia["color"]
 ]
 
-if "yellow" in colors:
+if "orange" in colors:
 
     verdict = "🟡 SURVEILLANCE"
     verdict_color = "#D4A017"
 
-if "orange" in colors:
-
-    verdict = "🟠 DÉSENSIBILISER"
-    verdict_color = "#fd7e14"
-
 if "red" in colors:
 
-    verdict = "🔴 SORTIE TACTIQUE"
+    verdict = "🔴 DÉSENSIBILISER"
     verdict_color = "#dc3545"
 
 # =========================================================
@@ -681,7 +481,7 @@ now = datetime.now(
     ZoneInfo("Europe/Paris")
 )
 
-st.title("📊 Cockpit Décisionnel")
+st.title("📊 Hybrid Cockpit")
 
 st.caption(
     f"Mise à jour : "
@@ -700,27 +500,22 @@ style="background:{verdict_color}">
 """, unsafe_allow_html=True)
 
 # =========================================================
-# EXECUTIVE
+# KPIs
 # =========================================================
 
-c1, c2, c3, c4 = st.columns(4)
+k1, k2, k3 = st.columns(3)
 
-c1.metric(
+k1.metric(
     "Valeur Totale",
-    f"{valeur_totale_reelle:,.2f} €"
+    f"{valeur_totale:,.2f} €"
 )
 
-c2.metric(
-    "Gain Net",
-    f"{gain_net:+,.2f} €"
+k2.metric(
+    "Gain Réel",
+    f"{gain_reel:+,.2f} €"
 )
 
-c3.metric(
-    "Performance Réelle",
-    f"{performance_reelle:+.2f}%"
-)
-
-c4.metric(
+k3.metric(
     "Gap vs World",
     f"{gap_vs_world:+.2f}%"
 )
@@ -747,179 +542,133 @@ for i, p in enumerate(positions_calc):
 # HYDROGEN
 # =========================================================
 
-st.subheader("🧪 Institutional Grade — Hydrogen")
+st.subheader("🧪 Diagnostic Hydrogen")
 
-h1, h2, h3, h4 = st.columns(4)
+h1, h2, h3 = st.columns(3)
 
 h1.metric(
     "Prix",
-    f"{hydrogen_grade['price']:.2f} €"
+    f"{hydrogen['price']:.2f} €"
 )
 
 h2.metric(
     "SMA20",
-    f"{hydrogen_grade['sma20']:.2f} €"
+    f"{hydrogen['sma20']:.2f} €"
 )
 
 h3.metric(
-    "RSI",
-    f"{hydrogen_grade['rsi']:.1f}"
-)
-
-h4.metric(
     "Bloom Energy",
-    f"{hydrogen_grade['sent_price']:.2f}"
+    f"{hydrogen['sentinel']:.2f} €"
 )
 
-if hydrogen_grade["color"] == "green":
-    st.success(hydrogen_grade["status"])
+if hydrogen["color"] == "green":
+    st.success(hydrogen["status"])
 
-elif hydrogen_grade["color"] == "yellow":
-    st.warning(hydrogen_grade["status"])
-
-elif hydrogen_grade["color"] == "orange":
-    st.warning(hydrogen_grade["status"])
+elif hydrogen["color"] == "orange":
+    st.warning(hydrogen["status"])
 
 else:
 
-    st.error(hydrogen_grade["status"])
+    st.error(hydrogen["status"])
 
     st.info(
-        f"Réallocation proposée : "
-        f"{hydrogen_grade['sell_amount']:,.0f} € "
-        f"vers World."
+        "Vendre une partie "
+        "pour renforcer World."
+    )
+
+# Hydrogen > 812€
+if hydrogen["price"] >= hydrogen_alert:
+
+    st.error(
+        "Hydrogen > 812€ : "
+        "Phase 3 atteinte."
     )
 
 # =========================================================
 # ASIA
 # =========================================================
 
-st.subheader("🌏 Institutional Grade — EM Asia")
+st.subheader("🌏 Diagnostic EM Asia")
 
-a1, a2, a3, a4 = st.columns(4)
+a1, a2, a3 = st.columns(3)
 
 a1.metric(
     "Prix",
-    f"{asia_grade['price']:.2f} €"
+    f"{asia['price']:.2f} €"
 )
 
 a2.metric(
     "SMA20",
-    f"{asia_grade['sma20']:.2f} €"
+    f"{asia['sma20']:.2f} €"
 )
 
 a3.metric(
-    "RSI",
-    f"{asia_grade['rsi']:.1f}"
-)
-
-a4.metric(
     "TSMC",
-    f"{asia_grade['sent_price']:.2f}"
+    f"{asia['sentinel']:.2f} €"
 )
 
-if asia_grade["color"] == "green":
-    st.success(asia_grade["status"])
+if asia["color"] == "green":
+    st.success(asia["status"])
 
-elif asia_grade["color"] == "yellow":
-    st.warning(asia_grade["status"])
-
-elif asia_grade["color"] == "orange":
-    st.warning(asia_grade["status"])
+elif asia["color"] == "orange":
+    st.warning(asia["status"])
 
 else:
 
-    st.error(asia_grade["status"])
+    st.error(asia["status"])
 
     st.info(
-        f"Réallocation proposée : "
-        f"{asia_grade['sell_amount']:,.0f} € "
-        f"vers World."
+        "Réduire EM Asia "
+        "et renforcer World."
     )
 
 # =========================================================
-# ALLOCATION LAZY
+# ALLOCATION
 # =========================================================
 
-st.subheader("🎯 Transition Lazy")
+st.subheader("🎯 Allocation actuelle vs cible Lazy")
 
-world_weight = 0
-gold_weight = 0
-sat_weight = 0
+world_value = sum([
+    p["valeur"]
+    for p in positions_calc
+    if p["type"] == "WORLD"
+])
 
-for p in positions_calc:
+gold_value = sum([
+    p["valeur"]
+    for p in positions_calc
+    if p["type"] == "GOLD"
+])
 
-    weight = (
-        p["valeur"]
-        / valeur_totale_reelle
-    ) * 100
+satellite_value = sum([
+    p["valeur"]
+    for p in positions_calc
+    if p["type"] == "SATELLITE"
+])
 
-    if p["type"] == "WORLD":
-        world_weight += weight
-
-    elif p["type"] == "GOLD":
-        gold_weight += weight
-
-    else:
-        sat_weight += weight
-
-l1, l2, l3 = st.columns(3)
-
-l1.metric(
-    "World",
-    f"{world_weight:.2f}%",
-    delta=f"{TARGET_WORLD - world_weight:+.2f}%"
-)
-
-l2.metric(
-    "Gold",
-    f"{gold_weight:.2f}%",
-    delta=f"{TARGET_GOLD - gold_weight:+.2f}%"
-)
-
-l3.metric(
-    "Satellites",
-    f"{sat_weight:.2f}%"
-)
-
-# =========================================================
-# GRAPHIQUE CONVERGENCE
-# =========================================================
-
-st.subheader("📈 Convergence vs MSCI World")
-
-historique_dates = pd.date_range(
-    start="2026-05-08",
-    periods=30
-)
-
-gap_series = np.linspace(
-    -1.87,
-    gap_vs_world,
-    30
-)
+current_alloc = [
+    world_value,
+    gold_value,
+    satellite_value
+]
 
 fig = go.Figure()
 
 fig.add_trace(
-    go.Scatter(
-        x=historique_dates,
-        y=gap_series,
-        mode="lines",
-        name="Gap vs World"
+    go.Pie(
+        labels=[
+            "World",
+            "Gold",
+            "Satellites"
+        ],
+        values=current_alloc,
+        hole=0.45
     )
-)
-
-fig.add_hline(
-    y=0,
-    line_dash="dash",
-    line_color="white"
 )
 
 fig.update_layout(
     template="plotly_dark",
-    height=500,
-    yaxis_title="Gap (%)"
+    height=500
 )
 
 st.plotly_chart(
@@ -928,50 +677,106 @@ st.plotly_chart(
 )
 
 # =========================================================
-# PLAN D'ACTION
+# CIBLE
 # =========================================================
 
-st.subheader("🧭 Plan d'Action")
+cw = (
+    world_value
+    / valeur_totale
+) * 100
 
-if hydrogen_grade["color"] == "red":
+cg = (
+    gold_value
+    / valeur_totale
+) * 100
 
-    st.error(
-        f"Hydrogen : vendre "
-        f"{hydrogen_grade['sell_amount']:,.0f} € "
-        f"vers World."
-    )
+cs = (
+    satellite_value
+    / valeur_totale
+) * 100
 
-if asia_grade["color"] == "red":
+t1, t2, t3 = st.columns(3)
 
-    st.error(
-        f"EM Asia : vendre "
-        f"{asia_grade['sell_amount']:,.0f} € "
-        f"vers World."
-    )
+t1.metric(
+    "World",
+    f"{cw:.2f}%",
+    delta=f"{TARGET_WORLD - cw:+.2f}%"
+)
 
-if sat_weight > 20:
+t2.metric(
+    "Gold",
+    f"{cg:.2f}%",
+    delta=f"{TARGET_GOLD - cg:+.2f}%"
+)
 
-    st.warning(
-        "Les satellites restent "
-        "surpondérés par rapport "
-        "à la cible Lazy."
-    )
+t3.metric(
+    "Satellites",
+    f"{cs:.2f}%"
+)
+
+# =========================================================
+# SENTINELLES
+# =========================================================
+
+st.subheader("📡 Sentinelles")
+
+sentinelles = []
+
+for ticker in [
+    "TSM",
+    "SSNLF",
+    "BE"
+]:
+
+    if ticker not in data:
+        continue
+
+    close = data[ticker]["Close"].squeeze()
+
+    last_price = safe_last(close)
+    prev_price = safe_prev(close)
+
+    variation = None
+
+    if prev_price:
+
+        variation = (
+            (
+                last_price
+                - prev_price
+            ) / prev_price
+        ) * 100
+
+    sentinelles.append({
+        "Ticker": ticker,
+        "Cours": round(last_price, 2),
+        "Variation 24h (%)": round(variation, 2)
+    })
+
+sent_df = pd.DataFrame(
+    sentinelles
+)
+
+st.dataframe(
+    sent_df,
+    use_container_width=True
+)
 
 # =========================================================
 # STATUS
 # =========================================================
 
 with st.status(
-    "Moteur Asset Management actif",
+    "Moteur Quant actif",
     expanded=False
 ):
 
-    st.write("✔ Données marché chargées")
-    st.write("✔ Benchmark World ancré")
-    st.write("✔ Gap corrigé")
-    st.write("✔ Institutional Grade actif")
-    st.write("✔ Analyse SMA20 / RSI")
-    st.write("✔ Transition Lazy surveillée")
+    st.write("✔ Calcul PRM réel")
+    st.write("✔ Gap vs World corrigé")
+    st.write("✔ SMA20 satellites")
+    st.write("✔ Sentinelles actives")
+    st.write("✔ Allocation Lazy surveillée")
+    st.write("✔ Bonus Fortuneo intégré")
     st.write("✔ Auto refresh actif")
 
 # =========================================================
@@ -981,7 +786,7 @@ with st.status(
 st.markdown("---")
 
 st.caption(
-    "Cockpit Décisionnel Institutional Grade • "
-    "Outil d'aide à la décision • "
-    "Ne constitue pas un conseil financier"
-    )
+    "Hybrid Cockpit • "
+    "Institutional Grade Dashboard • "
+    "Outil d'aide à la décision"
+)
